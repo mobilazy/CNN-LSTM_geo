@@ -1,0 +1,50 @@
+{
+  "with_depth": {
+    "MAE": 0.12060731649398804,
+    "RMSE": 0.1474585086107254,
+    "features": [
+      "geo_heatflow_mW_m2",
+      "geo_heatflow_mW_m2",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler levert fjernkj\u00f8ling Tur temperature",
+      "Energim\u00e5ler levert fjernvarme Retur temperature",
+      "Energim\u00e5ler levert fjernvarme Tur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK401 Tur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK402 Tur temperature",
+      "geo_gradient_C_per_km",
+      "geo_heatflow_mW_m2",
+      "bore_depth_km",
+      "geo_baseline_T_at_depth",
+      "Energim\u00e5ler energibr\u00f8nner Retur temperature",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler energibr\u00f8nner Avgitt effekt",
+      "Energim\u00e5ler energibr\u00f8nner Retur temperature__d1",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature__d1",
+      "Energim\u00e5ler energibr\u00f8nner Avgitt effekt__d1"
+    ]
+  },
+  "no_depth": {
+    "MAE": 0.19702468812465668,
+    "RMSE": 0.2386711984872818,
+    "features": [
+      "geo_heatflow_mW_m2",
+      "geo_heatflow_mW_m2",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler levert fjernkj\u00f8ling Tur temperature",
+      "Energim\u00e5ler levert fjernvarme Retur temperature",
+      "Energim\u00e5ler levert fjernvarme Tur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK401 Tur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK402 Tur temperature"
+    ]
+  },
+  "improvement_MAE": 0.07641737163066864,
+  "improvement_RMSE": 0.0912126898765564
+}

@@ -1,0 +1,124 @@
+2025-08-26 09:17:48,461 | INFO | Using device: cuda
+2025-08-26 09:17:48,463 | ERROR | Failed to read CSV: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+Traceback (most recent call last):
+  File "c:\Users\H259507\CNN-LSTM_geo\Traindata_geothermal_HybridCNNLSTM_rev01.py", line 431, in <module>
+    raise FileNotFoundError(f"CSV file not found: {CSV_PATH}")
+FileNotFoundError: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+2025-08-26 09:17:51,996 | INFO | Using device: cuda
+2025-08-26 09:17:51,997 | ERROR | Failed to read CSV: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+Traceback (most recent call last):
+  File "c:\Users\H259507\CNN-LSTM_geo\Traindata_geothermal_HybridCNNLSTM_rev01.py", line 431, in <module>
+    raise FileNotFoundError(f"CSV file not found: {CSV_PATH}")
+FileNotFoundError: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+2025-08-26 09:17:55,464 | INFO | Using device: cuda
+2025-08-26 09:17:55,465 | ERROR | Failed to read CSV: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+Traceback (most recent call last):
+  File "c:\Users\H259507\CNN-LSTM_geo\Traindata_geothermal_HybridCNNLSTM_rev01.py", line 431, in <module>
+    raise FileNotFoundError(f"CSV file not found: {CSV_PATH}")
+FileNotFoundError: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+2025-08-26 09:17:59,021 | INFO | Using device: cuda
+2025-08-26 09:17:59,021 | ERROR | Failed to read CSV: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+Traceback (most recent call last):
+  File "c:\Users\H259507\CNN-LSTM_geo\Traindata_geothermal_HybridCNNLSTM_rev01.py", line 431, in <module>
+    raise FileNotFoundError(f"CSV file not found: {CSV_PATH}")
+FileNotFoundError: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_geothermal_features_eng.csv
+2025-08-26 10:03:17,709 | INFO | Using device: cuda
+2025-08-26 10:03:20,098 | INFO | with_depth | Epoch 1/40 - train: 14.46166  val: 9.70966  lr: 1.00e-03
+2025-08-26 10:03:20,165 | INFO | with_depth | Epoch 2/40 - train: 1.20926  val: 2.70054  lr: 1.00e-03
+2025-08-26 10:03:20,231 | INFO | with_depth | Epoch 3/40 - train: 0.89123  val: 2.79506  lr: 1.00e-03
+2025-08-26 10:03:20,295 | INFO | with_depth | Epoch 4/40 - train: 0.58964  val: 1.14964  lr: 1.00e-03
+2025-08-26 10:03:20,366 | INFO | with_depth | Epoch 5/40 - train: 0.19715  val: 0.19562  lr: 1.00e-03
+2025-08-26 10:03:20,458 | INFO | with_depth | Epoch 6/40 - train: 0.05648  val: 0.01986  lr: 1.00e-03
+2025-08-26 10:03:20,536 | INFO | with_depth | Epoch 7/40 - train: 0.02816  val: 0.01363  lr: 1.00e-03
+2025-08-26 10:03:20,616 | INFO | with_depth | Epoch 8/40 - train: 0.02112  val: 0.01873  lr: 1.00e-03
+2025-08-26 10:03:20,701 | INFO | with_depth | Epoch 9/40 - train: 0.02000  val: 0.05257  lr: 1.00e-03
+2025-08-26 10:03:20,778 | INFO | with_depth | Epoch 10/40 - train: 0.01424  val: 0.03857  lr: 1.00e-03
+2025-08-26 10:03:20,849 | INFO | with_depth | Epoch 11/40 - train: 0.01219  val: 0.03440  lr: 1.00e-03
+2025-08-26 10:03:20,927 | INFO | with_depth | Epoch 12/40 - train: 0.01056  val: 0.04199  lr: 1.00e-03
+2025-08-26 10:03:21,011 | INFO | with_depth | Epoch 13/40 - train: 0.01077  val: 0.02756  lr: 1.00e-03
+2025-08-26 10:03:21,088 | INFO | with_depth | Epoch 14/40 - train: 0.01051  val: 0.04463  lr: 1.00e-03
+2025-08-26 10:03:21,160 | INFO | with_depth | Epoch 15/40 - train: 0.00967  val: 0.01339  lr: 1.00e-03
+2025-08-26 10:03:21,231 | INFO | with_depth | Epoch 16/40 - train: 0.01064  val: 0.05314  lr: 1.00e-03
+2025-08-26 10:03:21,302 | INFO | with_depth | Epoch 17/40 - train: 0.00924  val: 0.01103  lr: 1.00e-03
+2025-08-26 10:03:21,377 | INFO | with_depth | Epoch 18/40 - train: 0.00911  val: 0.00698  lr: 1.00e-03
+2025-08-26 10:03:21,447 | INFO | with_depth | Epoch 19/40 - train: 0.00860  val: 0.00471  lr: 1.00e-03
+2025-08-26 10:03:21,519 | INFO | with_depth | Epoch 20/40 - train: 0.00752  val: 0.00427  lr: 1.00e-03
+2025-08-26 10:03:21,595 | INFO | with_depth | Epoch 21/40 - train: 0.00653  val: 0.00952  lr: 1.00e-03
+2025-08-26 10:03:21,669 | INFO | with_depth | Epoch 22/40 - train: 0.00630  val: 0.00631  lr: 1.00e-03
+2025-08-26 10:03:21,743 | INFO | with_depth | Epoch 23/40 - train: 0.00776  val: 0.01943  lr: 1.00e-03
+2025-08-26 10:03:21,814 | INFO | with_depth | Epoch 24/40 - train: 0.00808  val: 0.00578  lr: 1.00e-03
+2025-08-26 10:03:21,889 | INFO | with_depth | Epoch 25/40 - train: 0.00705  val: 0.00442  lr: 1.00e-03
+2025-08-26 10:03:21,963 | INFO | with_depth | Epoch 26/40 - train: 0.00652  val: 0.00449  lr: 1.00e-03
+2025-08-26 10:03:22,039 | INFO | with_depth | Epoch 27/40 - train: 0.00616  val: 0.00471  lr: 1.00e-03
+2025-08-26 10:03:22,115 | INFO | with_depth | Epoch 28/40 - train: 0.00544  val: 0.00594  lr: 1.00e-03
+2025-08-26 10:03:22,115 | INFO | Early stopping at epoch 28 (no val improvement for 8 epochs)
+2025-08-26 10:03:22,236 | INFO | no_depth | Epoch 1/40 - train: 13.33534  val: 9.03300  lr: 1.00e-03
+2025-08-26 10:03:22,313 | INFO | no_depth | Epoch 2/40 - train: 1.10872  val: 3.60673  lr: 1.00e-03
+2025-08-26 10:03:22,388 | INFO | no_depth | Epoch 3/40 - train: 0.86430  val: 2.98265  lr: 1.00e-03
+2025-08-26 10:03:22,461 | INFO | no_depth | Epoch 4/40 - train: 0.50572  val: 0.68829  lr: 1.00e-03
+2025-08-26 10:03:22,532 | INFO | no_depth | Epoch 5/40 - train: 0.15769  val: 0.14075  lr: 1.00e-03
+2025-08-26 10:03:22,607 | INFO | no_depth | Epoch 6/40 - train: 0.05170  val: 0.01153  lr: 1.00e-03
+2025-08-26 10:03:22,681 | INFO | no_depth | Epoch 7/40 - train: 0.03988  val: 0.01572  lr: 1.00e-03
+2025-08-26 10:03:22,754 | INFO | no_depth | Epoch 8/40 - train: 0.03629  val: 0.00843  lr: 1.00e-03
+2025-08-26 10:03:22,826 | INFO | no_depth | Epoch 9/40 - train: 0.03162  val: 0.01775  lr: 1.00e-03
+2025-08-26 10:03:22,896 | INFO | no_depth | Epoch 10/40 - train: 0.02972  val: 0.01142  lr: 1.00e-03
+2025-08-26 10:03:22,969 | INFO | no_depth | Epoch 11/40 - train: 0.02668  val: 0.01683  lr: 1.00e-03
+2025-08-26 10:03:23,038 | INFO | no_depth | Epoch 12/40 - train: 0.02399  val: 0.03068  lr: 1.00e-03
+2025-08-26 10:03:23,115 | INFO | no_depth | Epoch 13/40 - train: 0.02334  val: 0.01362  lr: 1.00e-03
+2025-08-26 10:03:23,195 | INFO | no_depth | Epoch 14/40 - train: 0.02113  val: 0.02272  lr: 1.00e-03
+2025-08-26 10:03:23,291 | INFO | no_depth | Epoch 15/40 - train: 0.02242  val: 0.01294  lr: 1.00e-03
+2025-08-26 10:03:23,393 | INFO | no_depth | Epoch 16/40 - train: 0.01906  val: 0.01374  lr: 1.00e-03
+2025-08-26 10:03:23,393 | INFO | Early stopping at epoch 16 (no val improvement for 8 epochs)
+2025-08-26 10:03:23,420 | INFO | Metrics:
+{
+  "with_depth": {
+    "MAE": 0.12060731649398804,
+    "RMSE": 0.1474585086107254,
+    "features": [
+      "geo_heatflow_mW_m2",
+      "geo_heatflow_mW_m2",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler levert fjernkj\u00f8ling Tur temperature",
+      "Energim\u00e5ler levert fjernvarme Retur temperature",
+      "Energim\u00e5ler levert fjernvarme Tur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK401 Tur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK402 Tur temperature",
+      "geo_gradient_C_per_km",
+      "geo_heatflow_mW_m2",
+      "bore_depth_km",
+      "geo_baseline_T_at_depth",
+      "Energim\u00e5ler energibr\u00f8nner Retur temperature",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler energibr\u00f8nner Avgitt effekt",
+      "Energim\u00e5ler energibr\u00f8nner Retur temperature__d1",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature__d1",
+      "Energim\u00e5ler energibr\u00f8nner Avgitt effekt__d1"
+    ]
+  },
+  "no_depth": {
+    "MAE": 0.19702468812465668,
+    "RMSE": 0.2386711984872818,
+    "features": [
+      "geo_heatflow_mW_m2",
+      "geo_heatflow_mW_m2",
+      "Energim\u00e5ler energibr\u00f8nner Tur temperature",
+      "Energim\u00e5ler levert fjernkj\u00f8ling Tur temperature",
+      "Energim\u00e5ler levert fjernvarme Retur temperature",
+      "Energim\u00e5ler levert fjernvarme Tur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature",
+      "Energim\u00e5ler produsert _IK401 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK401 Tur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature",
+      "Energim\u00e5ler produsert _IK402 Retur temperature (2)",
+      "Energim\u00e5ler produsert _IK402 Tur temperature"
+    ]
+  },
+  "improvement_MAE": 0.07641737163066864,
+  "improvement_RMSE": 0.0912126898765564
+}
+2025-08-26 10:03:25,025 | INFO | Saved plot to: c:\Users\H259507\CNN-LSTM_geo\output\cnn_lstm_depth_comparison_eng.png
+2025-08-26 10:03:25,056 | INFO | Saved predictions to: c:\Users\H259507\CNN-LSTM_geo\output\cnn_lstm_predictions_test_eng.csv
