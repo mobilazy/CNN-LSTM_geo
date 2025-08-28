@@ -122,3 +122,42 @@ FileNotFoundError: CSV file not found: c:\Users\H259507\CNN-LSTM_geo\EDE_with_ge
 }
 2025-08-26 10:03:25,025 | INFO | Saved plot to: c:\Users\H259507\CNN-LSTM_geo\output\cnn_lstm_depth_comparison_eng.png
 2025-08-26 10:03:25,056 | INFO | Saved predictions to: c:\Users\H259507\CNN-LSTM_geo\output\cnn_lstm_predictions_test_eng.csv
+2025-08-28 10:41:23,536 | INFO | Using device: cuda
+2025-08-28 12:03:49,772 | INFO | Using device: cuda
+2025-08-28 12:03:52,231 | INFO | with_depth | Epoch 1/40 - train: 14.06228  val: 8.37967
+2025-08-28 12:03:52,296 | INFO | with_depth | Epoch 2/40 - train: 1.07701  val: 3.50083
+2025-08-28 12:03:52,360 | INFO | with_depth | Epoch 3/40 - train: 0.78917  val: 2.48607
+2025-08-28 12:03:52,423 | INFO | with_depth | Epoch 4/40 - train: 0.38376  val: 0.50968
+2025-08-28 12:03:52,485 | INFO | with_depth | Epoch 5/40 - train: 0.09903  val: 0.06389
+2025-08-28 12:03:52,549 | INFO | with_depth | Epoch 6/40 - train: 0.04420  val: 0.01381
+2025-08-28 12:03:52,614 | INFO | with_depth | Epoch 7/40 - train: 0.03137  val: 0.00834
+2025-08-28 12:03:52,679 | INFO | with_depth | Epoch 8/40 - train: 0.02512  val: 0.01280
+2025-08-28 12:03:52,744 | INFO | with_depth | Epoch 9/40 - train: 0.02231  val: 0.00739
+2025-08-28 12:03:52,809 | INFO | with_depth | Epoch 10/40 - train: 0.02193  val: 0.02152
+2025-08-28 12:03:52,872 | INFO | with_depth | Epoch 11/40 - train: 0.02255  val: 0.00908
+2025-08-28 12:03:52,938 | INFO | with_depth | Epoch 12/40 - train: 0.01876  val: 0.01095
+2025-08-28 12:03:53,002 | INFO | with_depth | Epoch 13/40 - train: 0.01705  val: 0.00850
+2025-08-28 12:03:53,069 | INFO | with_depth | Epoch 14/40 - train: 0.01733  val: 0.01175
+2025-08-28 12:03:53,131 | INFO | with_depth | Epoch 15/40 - train: 0.01650  val: 0.00858
+2025-08-28 12:03:53,197 | INFO | with_depth | Epoch 16/40 - train: 0.01616  val: 0.02148
+2025-08-28 12:03:53,263 | INFO | with_depth | Epoch 17/40 - train: 0.01571  val: 0.02679
+2025-08-28 12:03:53,263 | INFO | Early stopping at epoch 17 (no val improvement for 8 epochs)
+2025-08-28 12:03:53,385 | INFO | no_depth | Epoch 1/40 - train: 14.68728  val: 10.70001
+2025-08-28 12:03:53,449 | INFO | no_depth | Epoch 2/40 - train: 1.17858  val: 3.39616
+2025-08-28 12:03:53,516 | INFO | no_depth | Epoch 3/40 - train: 0.86514  val: 2.51328
+2025-08-28 12:03:53,582 | INFO | no_depth | Epoch 4/40 - train: 0.43212  val: 0.83893
+2025-08-28 12:03:53,645 | INFO | no_depth | Epoch 5/40 - train: 0.13433  val: 0.17064
+2025-08-28 12:03:53,711 | INFO | no_depth | Epoch 6/40 - train: 0.04375  val: 0.02751
+2025-08-28 12:03:53,777 | INFO | no_depth | Epoch 7/40 - train: 0.03162  val: 0.00888
+2025-08-28 12:03:53,843 | INFO | no_depth | Epoch 8/40 - train: 0.02664  val: 0.00675
+2025-08-28 12:03:53,910 | INFO | no_depth | Epoch 9/40 - train: 0.02303  val: 0.00646
+2025-08-28 12:03:53,974 | INFO | no_depth | Epoch 10/40 - train: 0.02625  val: 0.01028
+2025-08-28 12:03:54,039 | INFO | no_depth | Epoch 11/40 - train: 0.02376  val: 0.00895
+2025-08-28 12:03:54,104 | INFO | no_depth | Epoch 12/40 - train: 0.01829  val: 0.00755
+2025-08-28 12:03:54,164 | INFO | no_depth | Epoch 13/40 - train: 0.01687  val: 0.00882
+2025-08-28 12:03:54,231 | INFO | no_depth | Epoch 14/40 - train: 0.01880  val: 0.01777
+2025-08-28 12:03:54,296 | INFO | no_depth | Epoch 15/40 - train: 0.01756  val: 0.01040
+2025-08-28 12:03:54,362 | INFO | no_depth | Epoch 16/40 - train: 0.01405  val: 0.01061
+2025-08-28 12:03:54,427 | INFO | no_depth | Epoch 17/40 - train: 0.01401  val: 0.00753
+2025-08-28 12:03:54,427 | INFO | Early stopping at epoch 17 (no val improvement for 8 epochs)
+2025-08-28 12:03:54,467 | INFO | Metrics saved.
