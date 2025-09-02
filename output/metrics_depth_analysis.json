@@ -1,0 +1,18 @@
+{
+  "with_depth": {
+    "MAE": 0.20614129304885864,
+    "RMSE": 0.2537137567996979
+  },
+  "no_depth": {
+    "MAE": 0.2123125046491623,
+    "RMSE": 0.2779977321624756
+  },
+  "improvement_MAE": 0.00617121160030365,
+  "improvement_RMSE": 0.02428397536277771,
+  "depth_sensitivity_C_per_km": 0.09951554811917818,
+  "feature_counts": {
+    "with_depth": 24,
+    "no_depth": 20,
+    "depth_features": 4
+  }
+}
