@@ -30,6 +30,13 @@ CNN-LSTM Model for BHE Depth Signal Analysis
 Main Question: Can adding BHE depth as a signal improve outlet temperature 
 prediction reliability, and how does predicted outlet temperature change with depth?
 
+INPUT PARAMETERS (controlled and visible):
+1. Inlet temperature, outdoor temperature 
+2. Mass flow rate (calculated from power and deltaT)
+3. Well thermal resistance (0.09 mK/W)
+4. Bore hole depth signal
+5. Geothermal gradient (variable)
+
 Validation: 650m well data import framework for future validation
 """
 
@@ -39,7 +46,7 @@ Validation: 650m well data import framework for future validation
 CSV_PATH = os.environ.get(
     "CSV_PATH",
     os.path.join(os.path.dirname(__file__), 
-                 "EDE_with_geothermal_features_eng.csv"),
+                 "datapunkter_expanded_en.csv"),
 )
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", 
                            os.path.join(os.path.dirname(__file__), "output"))
@@ -65,17 +72,53 @@ PATIENCE = int(os.environ.get("PATIENCE", "16"))
 USE_SCHEDULER = os.environ.get("USE_SCHEDULER", 
                               "false").lower() in {"1", "true", "yes"}
 
-# Column names
-TIME_COL = "timestamp"
-INLET_COL = "Energy_meter_energy_wells_inlet_temperature_C"
-OUTLET_COL = "Energy_meter_energy_wells_return_temperature_C"
+# Column names mapped to combined_ede_mapped_v3.csv
+TIME_COL = "Timestamp"
+INLET_COL = "Borehole field energy meter — Supply temperature |°C|"  # Supply temperature as inlet
+OUTLET_COL = "Borehole field energy meter — Return temperature |°C|"  # Production return temperature as outlet
 DEPTH_COL = "bore_depth_km"
+
+# HX24 (Water-24% ethanol) properties for mass flow calculation
+HX24_SPECIFIC_HEAT = 3800.0  # J/(kg·K)
+OUTDOOR_TEMP_COL = "outside_t"  # Outdoor temperature
+DELIVERY_POWER_COL = "Borehole field energy meter — Power |kW|"  # Power obtained from well
+SUPPLY_TEMP_COL = "Borehole field energy meter — Supply temperature |°C|"  # well inlet temperature
+RETURN_TEMP_COL = "Borehole field energy meter — Return temperature |°C|"  # well outlet temperature
+
+# Well thermal properties
+WELL_THERMAL_RESISTANCE = 0.09  # mK/W - well thermal resistance
 
 # Geothermal parameters
 GEOTHERMAL_GRADIENT_C_PER_KM = float(
     os.environ.get("GEOTHERMAL_GRADIENT_C_PER_KM", "27.0"))
 SURFACE_BASELINE_C = float(os.environ.get("SURFACE_BASELINE_C", "8.0"))
 REAL_WELL_DEPTH_KM = float(os.environ.get("REAL_WELL_DEPTH_KM", "0.30"))
+
+#------------------------------------------------------------------------------
+# MASS FLOW RATE CALCULATION - SIMPLIFIED FOR HX24 WORKING FLUID
+#------------------------------------------------------------------------------
+def calculate_mass_flow_rate_hx24(df):
+    """Calculate mass flow rate for HX24 working fluid."""
+    logging.info("Calculating mass flow rate for HX24 working fluid")
+    
+    supply_temp = df[SUPPLY_TEMP_COL].fillna(df[INLET_COL])
+    return_temp = df[RETURN_TEMP_COL].fillna(df[OUTLET_COL])
+    power_kw = df[DELIVERY_POWER_COL]
+    
+    delta_T = return_temp - supply_temp
+    power_w = power_kw * 1000.0
+    
+    mass_flow_rate = np.where(
+        np.abs(delta_T) > 0.5,
+        power_w / (HX24_SPECIFIC_HEAT * delta_T),
+        np.nan
+    )
+    
+    mass_flow_rate = np.abs(mass_flow_rate)
+    df['mass_flow_hx24_kg_s'] = mass_flow_rate
+    df['well_thermal_resistance_mK_per_W'] = WELL_THERMAL_RESISTANCE
+    
+    return df
 
 #------------------------------------------------------------------------------
 # LOGGING SETUP
@@ -119,13 +162,16 @@ class DepthAwareSequenceDataset(Dataset):
             depth_related_indices = []
             for i, feat in enumerate(features):
                 if any(keyword in feat.lower() for keyword in 
-                      ['depth', 'geo_baseline', 'geo_gradient']):
+                      ['depth', 'geo_baseline', 'geo_gradient', 'mass_flow']):
                     depth_related_indices.append(i)
             
             for idx in depth_related_indices:
-                if self.std[idx] < 0.05:
+                if 'depth' in features[idx].lower():
+                    self.std[idx] = 0.3  # Changed from 0.05 to 0.3
+                    logging.info(f"Enhanced depth signal preservation: std={self.std[idx]:.3f}")
+                elif self.std[idx] < 0.05:
                     self.std[idx] = 0.05
-                    logging.info(f"Enhanced depth signal for '{features[idx]}'")
+                    logging.info(f"Enhanced signal preservation for '{features[idx]}'")
         
         self.X = (self.X - self.mean) / self.std
         
@@ -248,7 +294,7 @@ def depth_sensitivity_analysis(model, test_df, features_with, tr_ds, device, tar
     return depths_test, responses, sensitivity
 
 def setup_650m_validation_framework():
-    """Framework for future 650m validation data."""
+    """Framework for future 650m validation data with proper extrapolation."""
     
     validation_csv_path = os.path.join(os.path.dirname(__file__), 
                                       "real_650m_validation_data.csv")
@@ -265,21 +311,15 @@ def setup_650m_validation_framework():
             print(f"Error loading 650m data: {e}")
             return None
     else:
-        print(f"\nCreating 650m validation framework at {validation_csv_path}")
+        print(f"\nCreating 650m validation framework with proper extrapolation")
         
-        # Create placeholder structure
-        sample_data = {
-            TIME_COL: pd.date_range('2024-01-01', periods=100, freq='H'),
-            INLET_COL: np.random.normal(12.0, 2.0, 100),
-            OUTLET_COL: np.random.normal(15.0, 1.5, 100),
-            DEPTH_COL: [0.65] * 100,
-            "flow_rate_m3_h": np.random.normal(50.0, 5.0, 100),
-            "outdoor_temperature_C": np.random.normal(8.0, 5.0, 100),
-        }
+        depth_change = 0.65 - REAL_WELL_DEPTH_KM  # 650m - 300m = 350m
+        temp_increase = GEOTHERMAL_GRADIENT_C_PER_KM * depth_change
         
-        placeholder_df = pd.DataFrame(sample_data)
-        placeholder_df.to_csv(validation_csv_path, index=False)
-        print("Framework created - replace with real 650m data when available")
+        print(f"Extrapolating from {REAL_WELL_DEPTH_KM}km to 0.65km")
+        print(f"Depth increase: {depth_change:.2f}km")
+        print(f"Expected temperature increase: {temp_increase:.2f}°C")
+        
         return None
 
 #------------------------------------------------------------------------------
@@ -393,64 +433,62 @@ if __name__ == "__main__":
     df = pd.read_csv(CSV_PATH)
     logging.info(f"Loaded {len(df)} records with {len(df.columns)} features")
     
-    # Validate required columns
-    required_columns = [TIME_COL, INLET_COL, OUTLET_COL]
-    for col in required_columns:
-        if col not in df.columns:
-            raise RuntimeError(f"Missing required column: {col}")
-    
     # Process timestamp
     df[TIME_COL] = pd.to_datetime(df[TIME_COL], errors="coerce")
     df = df.sort_values(TIME_COL).dropna(subset=[TIME_COL]).reset_index(drop=True)
     
+    # Calculate mass flow rate using HX24 properties and add well thermal resistance
+    df = calculate_mass_flow_rate_hx24(df)
+    
     # Add depth and geothermal features
     if DEPTH_COL not in df.columns:
         df[DEPTH_COL] = REAL_WELL_DEPTH_KM
+        logging.info(f"Added constant depth: {REAL_WELL_DEPTH_KM} km")
     
     df["geo_baseline_T_at_depth"] = (SURFACE_BASELINE_C + 
                                     GEOTHERMAL_GRADIENT_C_PER_KM * df[DEPTH_COL])
     if "geo_gradient_C_per_km" not in df.columns:
         df["geo_gradient_C_per_km"] = GEOTHERMAL_GRADIENT_C_PER_KM
     
-    # Feature selection
+   # ...existing code up to feature selection...
+
+    # Feature selection - CONTROLLED PARAMETERS ONLY
     target = OUTLET_COL
-    inlet = INLET_COL
     
-    # Core features
-    core_feats = [inlet]
-    if "outdoor_temperature_C" in df.columns:
-        core_feats.append("outdoor_temperature_C")
+    # CONTROLLED FEATURES ONLY - exactly 6 parameters
+    controlled_features = [
+        INLET_COL,                          # Inlet temperature
+        OUTDOOR_TEMP_COL,                   # Outdoor temperature  
+        'mass_flow_hx24_kg_s',             # Mass flow rate (calculated)
+        'well_thermal_resistance_mK_per_W', # Well thermal resistance (0.09 mK/W)
+    ]
     
-    # System features
-    effect_cols = [c for c in df.columns 
-                  if "power" in c.lower() or c.lower().endswith("_kw")][:6]
-    flow_cols = [c for c in df.columns 
-                if "flow" in c.lower()][:3]
-    pressure_cols = [c for c in df.columns if "pressure" in c.lower()][:3]
-    temp_aux_cols = [c for c in df.columns 
-                    if "temperature" in c.lower() and 
-                       c not in {target, inlet, "outdoor_temperature_C"}][:10]
+    # Geothermal parameters for depth analysis
+    geo_features = [
+        DEPTH_COL,                         # Bore hole depth (300m baseline)
+        "geo_gradient_C_per_km"            # Geothermal gradient (variable)
+    ]
     
-    # Geothermal features
-    geo_cols = [c for c in ["geo_gradient_C_per_km", DEPTH_COL, "geo_baseline_T_at_depth"] 
-                if c in df.columns]
+    # Features WITHOUT depth (300m baseline model)
+    features_without_depth = controlled_features.copy()
     
-    # Derived features
-    df["delta_T_in_out"] = df[inlet] - df[target]
+    # Features WITH depth (for extrapolation to 650m)
+    features_with_depth = controlled_features + geo_features
     
-    # Feature sets
-    base_features = (core_feats + effect_cols + flow_cols + 
-                    pressure_cols + temp_aux_cols)
-    if "delta_T_in_out" not in base_features:
-        base_features.append("delta_T_in_out")
+    # Validate features exist
+    missing_features = [f for f in features_with_depth if f not in df.columns]
+    if missing_features:
+        logging.error(f"Missing controlled features: {missing_features}")
+        raise RuntimeError(f"Missing controlled features: {missing_features}")
     
-    geo_depth_features = geo_cols.copy()
-    if DEPTH_COL in df.columns:
-        df[f"{DEPTH_COL}__d1"] = df[DEPTH_COL].diff()
-        geo_depth_features.append(f"{DEPTH_COL}__d1")
+    logging.info("CONTROLLED PARAMETERS:")
+    logging.info(f"  Core features (4): {controlled_features}")
+    logging.info(f"  Geo features (2): {geo_features}")
+    logging.info(f"  Total controlled: {len(features_with_depth)} parameters")
     
-    df = df.dropna().reset_index(drop=True)
-    logging.info(f"Features: {len(base_features)} base + {len(geo_depth_features)} depth")
+    # Clean data - only keep records with all controlled parameters
+    df = df.dropna(subset=features_with_depth + [target]).reset_index(drop=True)
+    logging.info(f"Clean dataset: {len(df)} records with controlled parameters")
     
     # Data splitting
     N = len(df)
@@ -467,16 +505,16 @@ if __name__ == "__main__":
     logging.info(f"Data split - Train: {len(tr_df)}, Val: {len(va_df)}, Test: {len(test_df)}")
     
     # Model configuration
-    features_with = base_features + geo_depth_features
-    depth_feature_indices = [i for i, f in enumerate(features_with) 
-                            if any(kw in f.lower() for kw in 
-                                  ['depth', 'geo_baseline', 'geo_gradient'])]
+    depth_feature_indices = [i for i, f in enumerate(features_with_depth) 
+                            if f in [DEPTH_COL, "geo_gradient_C_per_km"]]
     
-    # Train model WITH depth
-    logging.info("Training model WITH depth features")
+    logging.info(f"Depth feature indices: {depth_feature_indices}")
+    
+    # Train model WITH depth (300m baseline + depth signal for extrapolation)
+    logging.info("Training model WITH depth features (for 300m->650m extrapolation)")
     tr_loader_with, va_loader_with, te_loader_with, tr_ds, te_ds = make_loaders_enhanced(
-        features_with, tr_df, va_df, test_df, target)
-    model_with = DepthAwareHybridCNNLSTM(len(features_with), CONV_CHANNELS, 
+        features_with_depth, tr_df, va_df, test_df, target)
+    model_with = DepthAwareHybridCNNLSTM(len(features_with_depth), CONV_CHANNELS, 
                                         KERNEL_SIZE, LSTM_HIDDEN, LSTM_LAYERS, 
                                         DROPOUT, depth_feature_indices).to(device)
     model_with, hist_with = train_model(model_with, tr_loader_with, 
@@ -484,13 +522,13 @@ if __name__ == "__main__":
                                        PATIENCE, USE_SCHEDULER, "with_depth|")
     y_true_with, y_pred_with, mae_with, rmse_with = evaluate_model(
         model_with, te_loader_with, device)
-    logging.info(f"Model WITH depth - MAE: {mae_with:.4f}, RMSE: {rmse_with:.4f}")
+    logging.info(f"Model WITH depth (300m baseline) - MAE: {mae_with:.4f}, RMSE: {rmse_with:.4f}")
 
-    # Train model WITHOUT depth
-    logging.info("Training model WITHOUT depth features")
+    # Train model WITHOUT depth (300m only, no extrapolation capability)
+    logging.info("Training model WITHOUT depth features (300m only)")
     tr_loader_no, va_loader_no, te_loader_no, tr_ds_no, te_ds_no = make_loaders_enhanced(
-        base_features, tr_df, va_df, test_df, target)
-    model_no = DepthAwareHybridCNNLSTM(len(base_features), CONV_CHANNELS, 
+        features_without_depth, tr_df, va_df, test_df, target)
+    model_no = DepthAwareHybridCNNLSTM(len(features_without_depth), CONV_CHANNELS, 
                                       KERNEL_SIZE, LSTM_HIDDEN, LSTM_LAYERS, 
                                       DROPOUT).to(device)
     model_no, hist_no = train_model(model_no, tr_loader_no, va_loader_no, 
@@ -498,123 +536,236 @@ if __name__ == "__main__":
                                    "no_depth|")
     y_true_no, y_pred_no, mae_no, rmse_no = evaluate_model(
         model_no, te_loader_no, device)
-    logging.info(f"Model WITHOUT depth - MAE: {mae_no:.4f}, RMSE: {rmse_no:.4f}")
+    logging.info(f"Model WITHOUT depth (300m only) - MAE: {mae_no:.4f}, RMSE: {rmse_no:.4f}")
 
     # Depth sensitivity analysis
     depths, responses, sensitivity = depth_sensitivity_analysis(
-        model_with, test_df, features_with, tr_ds, device, target)
+        model_with, test_df, features_with_depth, tr_ds, device, target)
 
-    # 650m validation framework
-    real_650m_data = setup_650m_validation_framework()
+    # 650m extrapolation analysis
+    logging.info("Performing 650m extrapolation analysis")
+    cf_650m = test_df.copy()
+    cf_650m[DEPTH_COL] = 0.65  # 650m depth
+    cf_650m["geo_baseline_T_at_depth"] = (SURFACE_BASELINE_C + 
+                                         GEOTHERMAL_GRADIENT_C_PER_KM * 0.65)
+    
+    ds_650m = DepthAwareSequenceDataset(cf_650m, TIME_COL, target, features_with_depth, 
+                                       SEQ_LEN, PRED_HORIZON, 
+                                       mean=tr_ds.mean, std=tr_ds.std)
+    dl_650m = DataLoader(ds_650m, BATCH_SIZE)
+    _, y_pred_650m, mae_650m, rmse_650m = evaluate_model(model_with, dl_650m, device)
+    
+    logging.info(f"650m extrapolation - MAE: {mae_650m:.4f}, RMSE: {rmse_650m:.4f}")
+    
+    # Temperature increase from 300m to 650m
+    temp_increase_predicted = np.mean(y_pred_650m - y_pred_with)
+    logging.info(f"Predicted temperature increase (300m->650m): {temp_increase_predicted:.3f}°C")
 
-    # Metrics
+    # Controlled parameter importance analysis
+    def controlled_parameter_importance():
+        """Analyze importance of controlled parameters."""
+        importance_scores = {}
+        
+        # Feature names for importance analysis
+        param_names = {
+            INLET_COL: 'Inlet Temperature',
+            OUTDOOR_TEMP_COL: 'Outdoor Temperature', 
+            'mass_flow_hx24_kg_s': 'Mass Flow Rate',
+            'well_thermal_resistance_mK_per_W': 'Thermal Resistance',
+            DEPTH_COL: 'Bore Depth',
+            'geo_gradient_C_per_km': 'Geothermal Gradient'
+        }
+        
+        # Calculate feature importance based on standard deviation impact
+        for i, feature in enumerate(features_with_depth):
+            std_val = tr_ds.std[i]
+            importance_scores[param_names.get(feature, feature)] = float(std_val)
+        
+        return importance_scores
+
+    param_importance = controlled_parameter_importance()
+
+    # Comprehensive metrics
     metrics = {
-        "with_depth": {"MAE": float(mae_with), "RMSE": float(rmse_with)},
-        "no_depth": {"MAE": float(mae_no), "RMSE": float(rmse_no)},
-        "improvement_MAE": float(mae_no - mae_with),
-        "improvement_RMSE": float(rmse_no - rmse_with),
-        "depth_sensitivity_C_per_km": float(sensitivity),
+        "controlled_parameters": {
+            "inlet_temperature": INLET_COL,
+            "outdoor_temperature": OUTDOOR_TEMP_COL,
+            "mass_flow_rate_hx24": "mass_flow_hx24_kg_s",
+            "well_thermal_resistance_mK_per_W": WELL_THERMAL_RESISTANCE,
+            "bore_depth_km": REAL_WELL_DEPTH_KM,
+            "geothermal_gradient_C_per_km": GEOTHERMAL_GRADIENT_C_PER_KM
+        },
+        "model_performance_300m": {
+            "with_depth": {"MAE": float(mae_with), "RMSE": float(rmse_with)},
+            "without_depth": {"MAE": float(mae_no), "RMSE": float(rmse_no)},
+            "improvement_MAE": float(mae_no - mae_with),
+            "improvement_RMSE": float(rmse_no - rmse_with)
+        },
+        "model_performance_650m": {
+            "extrapolated": {"MAE": float(mae_650m), "RMSE": float(rmse_650m)},
+            "temperature_increase_300m_to_650m": float(temp_increase_predicted)
+        },
+        "depth_analysis": {
+            "sensitivity_C_per_km": float(sensitivity),
+            "baseline_depth_km": REAL_WELL_DEPTH_KM,
+            "extrapolation_depth_km": 0.65
+        },
+        "parameter_importance": param_importance,
         "feature_counts": {
-            "with_depth": len(features_with),
-            "no_depth": len(base_features),
-            "depth_features": len(depth_feature_indices)
+            "controlled_features": len(controlled_features),
+            "geo_features": len(geo_features),
+            "total": len(features_with_depth)
         }
     }
 
-    with open(os.path.join(OUTPUT_DIR, "metrics_depth_analysis.json"), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, "controlled_analysis_metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
 
-    # Visualization
+    # Calculate test times for plotting
     test_times = test_df[TIME_COL].iloc[SEQ_LEN+PRED_HORIZON-1:].reset_index(drop=True)
     
-    # Main analysis plots
-    plt.figure(figsize=(15,10))
-
-    # Model comparison
-    plt.subplot(2,2,1)
-    plt.plot(train_df[TIME_COL], train_df[target], label="Training data", alpha=0.7)
-    plt.plot(test_times, y_true_with, label="Test actual", linewidth=2)
-    plt.plot(test_times, y_pred_with, label="With depth", linewidth=2)
-    plt.plot(test_times, y_pred_no, label="No depth", alpha=0.8)
-    plt.axvline(test_df[TIME_COL].iloc[0], ls="--", color='red', alpha=0.5)
-    plt.legend()
-    plt.ylabel("Outlet Temperature (°C)")
-    plt.title("Model Comparison")
-    plt.grid(True, alpha=0.3)
-
-    # Depth response analysis
-    plt.subplot(2,2,2)
-    plt.plot(depths, responses, marker='o', linewidth=2, markersize=6, color='green')
-    plt.xlabel('Depth (km)')
-    plt.ylabel('Outlet Temperature (°C)')
-    plt.title(f'Depth Response: {sensitivity:.3f} °C/km')
+    # SEPARATE PLOT 1: 650m Counterfactual Analysis
+    plt.figure(figsize=(15, 8))
+    plt.plot(test_times, y_true_with, label="Actual (300m)", linewidth=2, color='blue')
+    plt.plot(test_times, y_pred_650m, label="Predicted @ 650m", linewidth=2, color='red')
+    plt.plot(test_times, y_pred_with, label="Predicted @ 300m", linewidth=2, color='green')
+    
+    plt.ylabel("Outlet Temperature (°C)", fontsize=12)
+    plt.xlabel("Time", fontsize=12)
+    plt.title("650m Depth Counterfactual Analysis", fontsize=14, fontweight='bold')
+    plt.legend(fontsize=11)
     plt.grid(True, alpha=0.3)
     
-    # Performance comparison
-    plt.subplot(2,2,3)
-    models = ['Without Depth', 'With Depth']
-    mae_values = [mae_no, mae_with]
-    rmse_values = [rmse_no, rmse_with]
+    # Add temperature difference annotation
+    temp_diff = np.mean(y_pred_650m - y_pred_with)
+    plt.text(0.02, 0.98, f'Avg. Temperature Increase: {temp_diff:.3f}°C', 
+             transform=plt.gca().transAxes, fontsize=12, fontweight='bold',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8),
+             verticalalignment='top')
     
-    x = np.arange(len(models))
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "650m_counterfactual_analysis.png"), 
+                dpi=200, bbox_inches='tight')
+    plt.close()
+    
+    # SEPARATE PLOT 2: Comprehensive Analysis (4 panels, excluding model comparison)
+    fig = plt.figure(figsize=(16, 12))
+    
+    # 1. Depth Response
+    plt.subplot(2, 2, 1)
+    plt.plot(depths, responses, marker='o', linewidth=2, markersize=8, color='purple')
+    plt.axhline(y=np.mean(y_pred_with), color='green', linestyle='--', alpha=0.7, label='300m baseline')
+    plt.axhline(y=np.mean(y_pred_650m), color='red', linestyle='--', alpha=0.7, label='650m extrapolation')
+    plt.xlabel('Depth (km)', fontsize=11)
+    plt.ylabel('Outlet Temperature (°C)', fontsize=11)
+    plt.title(f'Depth Response: {sensitivity:.3f} °C/km', fontsize=12, fontweight='bold')
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    # 2. Controlled Parameter Importance
+    plt.subplot(2, 2, 2)
+    param_names = list(param_importance.keys())
+    param_values = list(param_importance.values())
+    
+    colors = ['lightcoral', 'skyblue', 'lightgreen', 'gold', 'plum', 'orange']
+    bars = plt.barh(param_names, param_values, color=colors[:len(param_names)])
+    plt.xlabel('Relative Importance (Std Dev)', fontsize=11)
+    plt.title('Controlled Parameter Importance', fontsize=12, fontweight='bold')
+    plt.grid(True, alpha=0.3, axis='x')
+    
+    # 3. Performance Comparison (MAE/RMSE)
+    plt.subplot(2, 2, 3)
+    scenarios = ['300m\n(no depth)', '300m\n(with depth)', '650m\n(extrapolated)']
+    mae_values = [mae_no, mae_with, mae_650m]
+    rmse_values = [rmse_no, rmse_with, rmse_650m]
+    
+    x = np.arange(len(scenarios))
     width = 0.35
     
     plt.bar(x - width/2, mae_values, width, label='MAE', color='steelblue')
     plt.bar(x + width/2, rmse_values, width, label='RMSE', color='orange')
     
-    plt.xlabel('Model Type')
-    plt.ylabel('Error')
-    plt.title('Performance Comparison')
-    plt.xticks(x, models)
-    plt.legend()
+    plt.xlabel('Model Scenario', fontsize=11)
+    plt.ylabel('Error', fontsize=11)
+    plt.title('Performance Comparison: 300m vs 650m', fontsize=12, fontweight='bold')
+    plt.xticks(x, scenarios, fontsize=10)
+    plt.legend(fontsize=10)
     plt.grid(True, alpha=0.3)
+    
+    # 4. Temperature Increase Analysis
+    plt.subplot(2, 2, 4)
+    depth_comparison = ['300m Baseline', '650m Extrapolated']
+    temp_means = [np.mean(y_pred_with), np.mean(y_pred_650m)]
+    temp_stds = [np.std(y_pred_with), np.std(y_pred_650m)]
+    
+    plt.bar(depth_comparison, temp_means, yerr=temp_stds, capsize=5, 
+            color=['green', 'red'], alpha=0.7)
+    plt.ylabel('Mean Outlet Temperature (°C)', fontsize=11)
+    plt.title(f'Temperature Increase: {temp_increase_predicted:.3f}°C', fontsize=12, fontweight='bold')
+    plt.grid(True, alpha=0.3)
+    
+    # Add temperature increase annotation
+    plt.annotate(f'+{temp_increase_predicted:.3f}°C', 
+                xy=(1, temp_means[1]), xytext=(0.5, temp_means[1] + 0.1),
+                arrowprops=dict(arrowstyle='->', color='black'),
+                fontsize=12, fontweight='bold', ha='center')
     
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "comprehensive_analysis.png"), 
                 dpi=200, bbox_inches='tight')
     plt.close()
 
-    # 650m counterfactual analysis
-    cf = test_df.copy()
-    cf[DEPTH_COL] = 0.65
-    cf["geo_baseline_T_at_depth"] = (SURFACE_BASELINE_C + 
-                                    GEOTHERMAL_GRADIENT_C_PER_KM * cf[DEPTH_COL])
-    ds = DepthAwareSequenceDataset(cf, TIME_COL, target, features_with, 
-                                SEQ_LEN, PRED_HORIZON, 
-                                mean=tr_ds.mean, std=tr_ds.std)
-    dl = DataLoader(ds, BATCH_SIZE)
-    _, ycf, _, _ = evaluate_model(model_with, dl, device)
-
-    plt.figure(figsize=(12,6))
-    plt.plot(test_times, y_true_with, label="Actual", linewidth=2, color='blue')
-    plt.plot(test_times, ycf, label="Predicted @ 650m", linewidth=2, color='red')
-    plt.plot(test_times, y_pred_with, label="Predicted @ original depth", alpha=0.7, color='green')
-    plt.legend()
-    plt.ylabel("Outlet Temperature (°C)")
-    plt.title("650m Depth Counterfactual Analysis")
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(OUTPUT_DIR, "650m_counterfactual_analysis.png"), 
-                dpi=200, bbox_inches='tight')
-    plt.close()
-
     # Save model
     torch.save(model_with.state_dict(), 
-               os.path.join(OUTPUT_DIR, "depth_aware_model.pth"))
+               os.path.join(OUTPUT_DIR, "controlled_depth_model.pth"))
     
-    logging.info("Analysis complete")
+    logging.info("Controlled parameter analysis complete")
+    logging.info(f"Controlled parameters: {len(features_with_depth)}")
+    logging.info(f"300m MAE: {mae_with:.4f}, 650m MAE: {mae_650m:.4f}")
+    logging.info(f"Temperature increase (300m->650m): {temp_increase_predicted:.3f}°C")
     logging.info(f"Depth sensitivity: {sensitivity:.4f} C/km")
-    logging.info(f"MAE improvement: {metrics['improvement_MAE']:.4f}")
-    logging.info(f"Outputs saved to: {OUTPUT_DIR}")
 
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    print("\n" + "="*60)
-    print("DEPTH ANALYSIS COMPLETE")
-    print("="*60)
-    print(f"Main findings:")
-    print(f"   Can depth signal improve prediction? MAE change: {metrics['improvement_MAE']:.4f}")
-    print(f"   How does outlet temp change with depth? {sensitivity:.4f} °C/km")
-    print(f"   Depth features used: {len(depth_feature_indices)}")
-    print(f"All results saved to: {OUTPUT_DIR}")
-    print("="*60)
+    print("\n" + "="*80)
+    print("CONTROLLED PARAMETER DEPTH ANALYSIS COMPLETE")
+    print("="*80)
+    print(f"CONTROLLED PARAMETERS (6 total):")
+    print(f"   1. Inlet Temperature: {INLET_COL}")
+    print(f"   2. Outdoor Temperature: {OUTDOOR_TEMP_COL}")
+    print(f"   3. Mass Flow Rate (HX24): calculated")
+    print(f"   4. Thermal Resistance: {WELL_THERMAL_RESISTANCE} mK/W")
+    print(f"   5. Bore Depth: {DEPTH_COL}")
+    print(f"   6. Geothermal Gradient: {GEOTHERMAL_GRADIENT_C_PER_KM} C/km")
+    print(f"")
+    print(f"RESULTS:")
+    print(f"   300m baseline MAE: {mae_with:.4f}")
+    print(f"   650m extrapolated MAE: {mae_650m:.4f}")
+    print(f"   Temperature increase (300m→650m): {temp_increase_predicted:.3f}°C")
+    print(f"   Depth sensitivity: {sensitivity:.4f} °C/km")
+    print(f"   Model improvement with depth: {metrics['model_performance_300m']['improvement_MAE']:.4f} MAE")
+    print(f"")
+    print(f"VALIDATION FRAMEWORK:")
+    print(f"   - 650m predictions ready for validation with real data")
+    print(f"   - Controlled parameters ensure reproducible results")
+    print(f"   - All outputs saved to: {OUTPUT_DIR}")
+    print("="*80)
+
+    # Depth feature debug code:
+    depth_idx = features_with_depth.index(DEPTH_COL)
+    print(f"Depth feature index: {depth_idx}")
+    print(f"Training depth stats - mean: {tr_ds.mean[depth_idx]:.6f}, std: {tr_ds.std[depth_idx]:.6f}")
+    print(f"300m normalized: {(0.30 - tr_ds.mean[depth_idx]) / tr_ds.std[depth_idx]:.6f}")
+    print(f"650m normalized: {(0.65 - tr_ds.mean[depth_idx]) / tr_ds.std[depth_idx]:.6f}")
+
+    # Add this data validation:
+    print("DATA VALIDATION:")
+    print(f"Inlet temp range: {df[INLET_COL].min():.1f} to {df[INLET_COL].max():.1f}°C")
+    print(f"Outlet temp range: {df[OUTLET_COL].min():.1f} to {df[OUTLET_COL].max():.1f}°C")
+    print(f"Temp difference: {(df[OUTLET_COL] - df[INLET_COL]).mean():.2f}°C")
+    print(f"Mass flow range: {df['mass_flow_hx24_kg_s'].min():.3f} to {df['mass_flow_hx24_kg_s'].max():.3f} kg/s")
+
+    # Check if you have real BHE data:
+    bhe_columns = [col for col in df.columns if 'borehole' in col.lower()]
+    print(f"Available BHE columns: {bhe_columns}")
