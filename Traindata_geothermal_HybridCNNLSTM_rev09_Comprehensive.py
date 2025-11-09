@@ -38,10 +38,19 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
-EPOCHS = 50
+EPOCHS = 5
 LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
+
+# Time-based evaluation windows (days)
+FORECAST_WINDOW_DAYS = 21  # prediction horizon shown in plots and evaluation
+VALIDATION_WINDOW_DAYS = 7  # hold-out window immediately preceding forecast
+TRAIN_HISTORY_WINDOW_DAYS = 21  # amount of history to display alongside forecast
+
+FORECAST_WINDOW_HOURS = FORECAST_WINDOW_DAYS * 24
+VALIDATION_WINDOW_HOURS = VALIDATION_WINDOW_DAYS * 24
+TRAIN_HISTORY_WINDOW_HOURS = TRAIN_HISTORY_WINDOW_DAYS * 24
 
 # CNN-LSTM architecture
 CONV_CHANNELS = [32, 64]
@@ -691,15 +700,28 @@ def evaluate_model(model, data_loader, device):
     
     return predictions, targets, mae, rmse
 
-def create_comprehensive_collector_analysis(test_df, predictions, targets, feature_cols, config_analysis):
-    """Generate per-collector actual vs predicted plots with inline error metrics."""
+def create_comprehensive_collector_analysis(
+    full_df,
+    test_df,
+    predictions,
+    targets,
+    feature_cols,
+    config_analysis,
+    train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+    forecast_hours=FORECAST_WINDOW_HOURS
+):
+    """Generate per-collector plots blending training history and forecast horizon."""
 
-    logging.info("Creating comprehensive collector configuration analysis...")
+    logging.info(
+        "Creating comprehensive collector configuration analysis with training/forecast split..."
+    )
 
-    # Prepare test data
+    if 'Timestamp' not in test_df.columns:
+        logging.warning("Timestamp column missing in test data; cannot build timeline plot")
+        return None
+
     test_data = test_df.copy()
 
-    # Align predictions with test data length
     if len(predictions) < len(test_data):
         padded_predictions = np.full(len(test_data), np.nan)
         padded_predictions[-len(predictions):] = predictions
@@ -709,13 +731,19 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
 
     test_data['actual_temp'] = test_data['return_temp']
 
-    # Keep only rows where predictions exist
-    valid_data = test_data.dropna(subset=['predicted_temp'])
-    if len(valid_data) == 0:
+    valid_data = test_data.dropna(subset=['predicted_temp']).copy()
+    if valid_data.empty:
         logging.warning("No valid data for comprehensive collector analysis")
         return None
 
-    # Define colors and labels for consistency
+    prediction_start = valid_data['Timestamp'].min()
+    prediction_end = valid_data['Timestamp'].max()
+    logging.info(
+        "Forecast evaluation span detected from %s to %s",
+        prediction_start,
+        prediction_end
+    )
+
     colors = {
         'single_u45mm': '#2E86AB',
         'double_u45mm': '#A23B72',
@@ -728,88 +756,179 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
         'muovi_ellipse_63mm': 'MuoviEllipse 63mm (Research)'
     }
 
-    # Determine plotting order prioritising known collector types
     default_order = ['single_u45mm', 'double_u45mm', 'muovi_ellipse_63mm']
     available_types = list(valid_data['bhe_type'].unique())
     collector_order = [t for t in default_order if t in available_types]
     collector_order.extend([t for t in available_types if t not in collector_order])
 
-    collector_metrics = {}
+    collector_segments: Dict[str, Dict[str, pd.DataFrame]] = {}
+    collector_metrics: Dict[str, Dict[str, float]] = {}
+
     for bhe_type in collector_order:
-        type_data = valid_data[valid_data['bhe_type'] == bhe_type]
-        clean_mask = ~(np.isnan(type_data['predicted_temp']) | np.isnan(type_data['actual_temp']))
-        if clean_mask.sum() == 0:
+        type_forecast = valid_data[valid_data['bhe_type'] == bhe_type].sort_values('Timestamp')
+        if type_forecast.empty:
             continue
-        mae = mean_absolute_error(type_data.loc[clean_mask, 'actual_temp'],
-                                  type_data.loc[clean_mask, 'predicted_temp'])
-        rmse = np.sqrt(mean_squared_error(type_data.loc[clean_mask, 'actual_temp'],
-                                          type_data.loc[clean_mask, 'predicted_temp']))
+
+        forecast_segment = type_forecast.copy()
+        if forecast_hours is not None:
+            forecast_limit = prediction_start + pd.Timedelta(hours=forecast_hours)
+            limited_segment = forecast_segment[forecast_segment['Timestamp'] <= forecast_limit]
+            if not limited_segment.empty:
+                forecast_segment = limited_segment
+        forecast_segment['phase'] = 'forecast'
+
+        base_train = full_df[
+            (full_df['bhe_type'] == bhe_type) & (full_df['Timestamp'] < prediction_start)
+        ].copy()
+        base_train = base_train.dropna(subset=['return_temp'])
+        base_train = base_train.sort_values('Timestamp')
+
+        if train_history_hours is not None and not base_train.empty:
+            history_cutoff = prediction_start - pd.Timedelta(hours=train_history_hours)
+            train_segment = base_train[base_train['Timestamp'] >= history_cutoff]
+            if train_segment.empty:
+                train_segment = base_train.tail(min(len(base_train), 3 * SEQ_LEN))
+        else:
+            train_segment = base_train
+
+        if not train_segment.empty:
+            train_segment = train_segment.copy()
+            train_segment['actual_temp'] = train_segment['return_temp']
+            train_segment['predicted_temp'] = np.nan
+            train_segment['phase'] = 'training'
+        else:
+            train_segment = pd.DataFrame(columns=['Timestamp', 'actual_temp', 'predicted_temp', 'phase'])
+
+        collector_segments[bhe_type] = {
+            'train': train_segment,
+            'forecast': forecast_segment
+        }
+
+        metric_mask = ~(forecast_segment['predicted_temp'].isna() | forecast_segment['actual_temp'].isna())
+        if metric_mask.sum() == 0:
+            continue
+        mae = mean_absolute_error(
+            forecast_segment.loc[metric_mask, 'actual_temp'],
+            forecast_segment.loc[metric_mask, 'predicted_temp']
+        )
+        rmse = np.sqrt(
+            mean_squared_error(
+                forecast_segment.loc[metric_mask, 'actual_temp'],
+                forecast_segment.loc[metric_mask, 'predicted_temp']
+            )
+        )
         collector_metrics[bhe_type] = {
             'mae': mae,
             'rmse': rmse,
-            'count': int(clean_mask.sum())
+            'count': int(metric_mask.sum()),
+            'train_samples': int(len(base_train))
         }
 
-    if not collector_metrics:
-        logging.warning("Collector metrics could not be computed; aborting plot creation")
+    if not collector_segments:
+        logging.warning("No collector segments available for plotting")
         return None
 
-    num_collectors = len(collector_metrics)
-    fig_height = 4 * num_collectors + 3
+    num_collectors = len(collector_segments)
+    fig_height = 4.2 * num_collectors + 3
     fig = plt.figure(figsize=(18, fig_height))
     gs = fig.add_gridspec(num_collectors + 1, 1,
-                          height_ratios=[3] * num_collectors + [1.8],
+                          height_ratios=[3.1] * num_collectors + [1.8],
                           hspace=0.35)
 
     for idx, bhe_type in enumerate(collector_order):
-        metrics = collector_metrics.get(bhe_type)
-        if metrics is None:
+        segments = collector_segments.get(bhe_type)
+        if segments is None:
+            continue
+
+        train_segment = segments['train']
+        forecast_segment = segments['forecast']
+        if forecast_segment.empty:
             continue
 
         ax = fig.add_subplot(gs[idx, 0])
-        type_data = valid_data[valid_data['bhe_type'] == bhe_type].sort_values('Timestamp')
-
-        if len(type_data) > 1200:
-            type_data = type_data.iloc[-1200:]
-
         color = colors.get(bhe_type, '#333333')
         label = labels.get(bhe_type, bhe_type)
 
-        ax.plot(
-            type_data['Timestamp'],
-            type_data['actual_temp'],
+        handles = []
+        legend_labels = []
+
+        if not train_segment.empty:
+            train_line, = ax.plot(
+                train_segment['Timestamp'],
+                train_segment['actual_temp'],
+                color=color,
+                linewidth=1.2,
+                alpha=0.4,
+                label='Training Actual'
+            )
+            handles.append(train_line)
+            legend_labels.append('Training Actual')
+
+        forecast_actual_line, = ax.plot(
+            forecast_segment['Timestamp'],
+            forecast_segment['actual_temp'],
             color=color,
-            linewidth=1.6,
-            alpha=0.75,
-            label='Actual'
+            linewidth=1.5,
+            alpha=0.85,
+            label='Forecast Actual'
         )
-        ax.plot(
-            type_data['Timestamp'],
-            type_data['predicted_temp'],
+        handles.append(forecast_actual_line)
+        legend_labels.append('Forecast Actual')
+
+        forecast_pred_line, = ax.plot(
+            forecast_segment['Timestamp'],
+            forecast_segment['predicted_temp'],
             color=color,
             linestyle='--',
             linewidth=1.8,
             alpha=0.9,
-            label='Predicted'
+            label='Prediction'
+        )
+        handles.append(forecast_pred_line)
+        legend_labels.append('Prediction')
+
+        forecast_end_time = forecast_segment['Timestamp'].max()
+        ax.axvline(prediction_start, color='#4f4f4f', linestyle='--', linewidth=1.1, alpha=0.8)
+        ax.axvspan(prediction_start, forecast_end_time, color=color, alpha=0.05)
+        ax.text(
+            prediction_start,
+            0.97,
+            'Forecast start',
+            transform=ax.get_xaxis_transform(),
+            fontsize=10,
+            ha='left',
+            va='top',
+            color='#4f4f4f'
         )
 
         ax.set_title(label, fontsize=14, fontweight='bold', pad=12)
         ax.set_ylabel('Outlet Temperature (°C)', fontsize=12)
         ax.grid(True, alpha=0.25)
-        ax.legend(loc='upper left', fontsize=10)
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
 
-        ax.text(
-            0.9,
-            0.05,
-            f"MAE: {metrics['mae']:.3f}°C\nRMSE: {metrics['rmse']:.3f}°C\nSamples: {metrics['count']:,}",
-            transform=ax.transAxes,
-            fontsize=11,
-            ha='right',
-            va='bottom',
-            bbox=dict(facecolor='white', alpha=0.85, boxstyle='round,pad=0.4')
-        )
+        if handles and idx == 0:
+            ax.legend(handles, legend_labels, loc='upper left', fontsize=10)
+
+        metrics = collector_metrics.get(bhe_type)
+        if metrics is not None:
+            ax.text(
+                0.98,
+                0.95,
+                f"MAE: {metrics['mae']:.3f}°C\nRMSE: {metrics['rmse']:.3f}°C\nTrain Samples: {metrics['train_samples']:,}\nForecast Samples: {metrics['count']:,}",
+                transform=ax.transAxes,
+                fontsize=11,
+                ha='right',
+                va='top',
+                bbox=dict(facecolor='white', alpha=0.85, boxstyle='round,pad=0.4')
+            )
+
+        if not train_segment.empty:
+            x_min = train_segment['Timestamp'].min()
+        else:
+            x_min = forecast_segment['Timestamp'].min()
+        x_max = forecast_segment['Timestamp'].max()
+        ax.set_xlim(x_min, x_max)
 
         if idx == num_collectors - 1:
             ax.set_xlabel('Time', fontsize=12, labelpad=10)
@@ -821,7 +940,7 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
     summary_ax.text(
         0.5,
         0.9,
-        'Model Prediction Metrics',
+        'Model Prediction Metrics (Forecast Window)',
         fontsize=14,
         fontweight='bold',
         ha='center',
@@ -838,12 +957,13 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
             labels.get(bhe_type, bhe_type),
             f"{metrics['mae']:.3f}°C",
             f"{metrics['rmse']:.3f}°C",
+            f"{metrics['train_samples']:,}",
             f"{metrics['count']:,}"
         ])
 
     table = summary_ax.table(
         cellText=table_rows,
-        colLabels=['Collector', 'MAE', 'RMSE', 'Samples'],
+        colLabels=['Collector', 'MAE', 'RMSE', 'Training Samples', 'Forecast Samples'],
         loc='center',
         cellLoc='center',
         bbox=[0.05, 0.0, 0.9, 0.75]
@@ -858,7 +978,7 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
     plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
 
-    logging.info(f"Comprehensive collector analysis saved to: {plot_path}")
+    logging.info("Comprehensive collector analysis saved to: %s", plot_path)
 
     print("\n" + "=" * 80)
     print("COMPREHENSIVE COLLECTOR ANALYSIS SUMMARY")
@@ -872,7 +992,8 @@ def create_comprehensive_collector_analysis(test_df, predictions, targets, featu
         print(f"  {label}:")
         print(f"    MAE: {metrics['mae']:.4f}°C")
         print(f"    RMSE: {metrics['rmse']:.4f}°C")
-        print(f"    Samples: {metrics['count']:,}")
+    print(f"    Training Samples: {metrics['train_samples']:,}")
+    print(f"    Forecast Samples: {metrics['count']:,}")
 
     print("=" * 80)
 
@@ -1809,16 +1930,30 @@ def main():
     
     logging.info(f"Model data: {len(model_data)} records with {len(feature_cols)} features")
     
-    # Train/validation/test split (chronological)
-    n = len(model_data)
-    train_end = int(n * (1 - VAL_SPLIT - TEST_SPLIT))
-    val_end = int(n * (1 - TEST_SPLIT))
-    
-    train_df = model_data.iloc[:train_end].copy()
-    val_df = model_data.iloc[train_end:val_end].copy()
-    test_df = model_data.iloc[val_end:].copy()
-    
-    logging.info(f"Data splits: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
+    # Time-based train/validation/test split
+    latest_timestamp = model_data['Timestamp'].max()
+    test_start = latest_timestamp - pd.Timedelta(days=FORECAST_WINDOW_DAYS)
+    val_start = test_start - pd.Timedelta(days=VALIDATION_WINDOW_DAYS)
+
+    train_df = model_data[model_data['Timestamp'] < val_start].copy()
+    val_df = model_data[(model_data['Timestamp'] >= val_start) & (model_data['Timestamp'] < test_start)].copy()
+    test_df = model_data[model_data['Timestamp'] >= test_start].copy()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise ValueError(
+            "Time-based split produced an empty subset. Check that the dataset covers the requested windows."
+        )
+
+    logging.info(
+        "Data splits (time-based): Train=%d (up to %s), Val=%d (%s to %s), Test=%d (from %s)",
+        len(train_df),
+        val_start,
+        len(val_df),
+        val_start,
+        test_start,
+        len(test_df),
+        test_start
+    )
     
     # Create datasets
     train_dataset = ComprehensiveDataset(train_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col)
@@ -1898,7 +2033,14 @@ def main():
     # Create comprehensive collector analysis
     print("Creating comprehensive collector analysis...")
     comprehensive_plot_path = create_comprehensive_collector_analysis(
-        test_df, predictions, targets, feature_cols, config_analysis)
+        combined_data,
+        test_df,
+        predictions,
+        targets,
+        feature_cols,
+        config_analysis,
+        train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+        forecast_hours=FORECAST_WINDOW_HOURS)
     
     # Save results
     results = {
@@ -1950,16 +2092,30 @@ def main():
     
     logging.info(f"Model data: {len(model_data)} records with {len(feature_cols)} features")
     
-    # Train/validation/test split (chronological)
-    n = len(model_data)
-    train_end = int(n * (1 - VAL_SPLIT - TEST_SPLIT))
-    val_end = int(n * (1 - TEST_SPLIT))
-    
-    train_df = model_data.iloc[:train_end].copy()
-    val_df = model_data.iloc[train_end:val_end].copy()
-    test_df = model_data.iloc[val_end:].copy()
-    
-    logging.info(f"Data splits: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
+    # Time-based train/validation/test split
+    latest_timestamp = model_data['Timestamp'].max()
+    test_start = latest_timestamp - pd.Timedelta(days=FORECAST_WINDOW_DAYS)
+    val_start = test_start - pd.Timedelta(days=VALIDATION_WINDOW_DAYS)
+
+    train_df = model_data[model_data['Timestamp'] < val_start].copy()
+    val_df = model_data[(model_data['Timestamp'] >= val_start) & (model_data['Timestamp'] < test_start)].copy()
+    test_df = model_data[model_data['Timestamp'] >= test_start].copy()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise ValueError(
+            "Time-based split produced an empty subset. Check that the dataset covers the requested windows."
+        )
+
+    logging.info(
+        "Data splits (time-based): Train=%d (up to %s), Val=%d (%s to %s), Test=%d (from %s)",
+        len(train_df),
+        val_start,
+        len(val_df),
+        val_start,
+        test_start,
+        len(test_df),
+        test_start
+    )
     
     # Create datasets
     train_dataset = ComprehensiveDataset(train_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col)
@@ -2044,7 +2200,15 @@ def main():
 
     # Create comprehensive visualization (includes all model performance metrics)
     print("Creating comprehensive collector analysis...")
-    comprehensive_plot_path = create_comprehensive_collector_analysis(test_df, predictions, targets, feature_cols, config_analysis)    # Save results
+    comprehensive_plot_path = create_comprehensive_collector_analysis(
+        combined_data,
+        test_df,
+        predictions,
+        targets,
+        feature_cols,
+        config_analysis,
+        train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+        forecast_hours=FORECAST_WINDOW_HOURS)
     results = {
         'model_performance': {
             'overall_mae': float(mae),
