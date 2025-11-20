@@ -38,10 +38,19 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
-EPOCHS = 10
+EPOCHS = 50
 LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
+
+# Time-based evaluation windows (days)
+FORECAST_WINDOW_DAYS = 21  # prediction horizon shown in plots and evaluation
+VALIDATION_WINDOW_DAYS = 7  # hold-out window immediately preceding forecast
+TRAIN_HISTORY_WINDOW_DAYS = 21  # amount of history to display alongside forecast
+
+FORECAST_WINDOW_HOURS = FORECAST_WINDOW_DAYS * 24
+VALIDATION_WINDOW_HOURS = VALIDATION_WINDOW_DAYS * 24
+TRAIN_HISTORY_WINDOW_HOURS = TRAIN_HISTORY_WINDOW_DAYS * 24
 
 # CNN-LSTM architecture
 CONV_CHANNELS = [32, 64]
@@ -269,18 +278,10 @@ def clean_bhe_data(df, dataset_name=""):
     power_cols = ['power_kw']
     flow_cols = ['flow_rate']
     
-    # 1. Apply precision rounding and convert to numeric
-    for col in temp_cols:
+    # 1. Convert to numeric without rounding so we retain sensor fidelity
+    for col in temp_cols + power_cols + flow_cols:
         if col in df_clean.columns:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').round(2)
-    
-    for col in power_cols:
-        if col in df_clean.columns:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').round(1)
-    
-    for col in flow_cols:
-        if col in df_clean.columns:
-            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').round(3)
+            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
     
     # 2. Remove physically unrealistic values
     for col in temp_cols:
@@ -310,31 +311,32 @@ def clean_bhe_data(df, dataset_name=""):
             if outliers_removed > 0:
                 logging.info(f"Removed {outliers_removed} flow rate outliers from {col}")
     
-    # 3. Remove duplicate consecutive values (sensor stuck readings)
+    # 3. Remove duplicate consecutive values (sensor stuck readings) with a higher tolerance
     for col in temp_cols + power_cols + flow_cols:
         if col in df_clean.columns:
-            # Find consecutive duplicates (same value for >10 consecutive readings)
+            # Find consecutive duplicates (same value for >18 consecutive readings)
             consecutive_same = df_clean[col].groupby((df_clean[col] != df_clean[col].shift()).cumsum()).transform('size')
-            stuck_mask = consecutive_same > 10
+            stuck_mask = consecutive_same > 18
             stuck_removed = stuck_mask.sum()
             df_clean.loc[stuck_mask, col] = np.nan
             if stuck_removed > 0:
                 logging.info(f"Removed {stuck_removed} stuck sensor readings from {col}")
     
-    # 4. Apply median filter to reduce sensor noise
-    window_size = 5  # 25-minute window for 5-minute data
+    # 4. Apply light median filtering to reduce sensor noise without over-smoothing
+    window_temp = 3  # 15-minute window for temperatures
+    window_other = 5  # Slightly wider for power/flow to keep signals stable
     for col in temp_cols:
         if col in df_clean.columns:
-            df_clean[col] = df_clean[col].rolling(window=window_size, center=True, min_periods=1).median()
-    
+            df_clean[col] = df_clean[col].rolling(window=window_temp, center=True, min_periods=1).median()
+
     for col in power_cols + flow_cols:
         if col in df_clean.columns:
-            df_clean[col] = df_clean[col].rolling(window=window_size, center=True, min_periods=1).median()
-    
-    logging.info(f"Applied median filtering (window={window_size})")
-    
-    # 5. Interpolate short gaps (up to 30 minutes = 6 readings)
-    max_gap = 6
+            df_clean[col] = df_clean[col].rolling(window=window_other, center=True, min_periods=1).median()
+
+    logging.info(f"Applied median filtering (temps={window_temp}, other={window_other})")
+
+    # 5. Interpolate short gaps (up to 20 minutes = 4 readings)
+    max_gap = 4
     for col in temp_cols + power_cols + flow_cols:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].interpolate(method='linear', limit=max_gap)
@@ -698,256 +700,323 @@ def evaluate_model(model, data_loader, device):
     
     return predictions, targets, mae, rmse
 
-def create_comprehensive_collector_analysis(test_df, predictions, targets, feature_cols, config_analysis):
-    """Create comprehensive collector configuration analysis with multiple panels."""
-    
-    logging.info("Creating comprehensive collector configuration analysis...")
-    
-    # Prepare test data
+def create_comprehensive_collector_analysis(
+    full_df,
+    test_df,
+    predictions,
+    targets,
+    feature_cols,
+    config_analysis,
+    train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+    forecast_hours=FORECAST_WINDOW_HOURS
+):
+    """Generate per-collector plots blending training history and forecast horizon."""
+
+    logging.info(
+        "Creating comprehensive collector configuration analysis with training/forecast split..."
+    )
+
+    if 'Timestamp' not in test_df.columns:
+        logging.warning("Timestamp column missing in test data; cannot build timeline plot")
+        return None
+
     test_data = test_df.copy()
-    
-    # Add predictions with proper alignment
+
     if len(predictions) < len(test_data):
         padded_predictions = np.full(len(test_data), np.nan)
         padded_predictions[-len(predictions):] = predictions
-        predictions = padded_predictions
-    
-    test_data['predicted_temp'] = predictions[:len(test_data)]
+        test_data['predicted_temp'] = padded_predictions
+    else:
+        test_data['predicted_temp'] = predictions[:len(test_data)]
+
     test_data['actual_temp'] = test_data['return_temp']
-    
-    # Filter for consistent time range across all collector types
-    valid_data = test_data.dropna(subset=['predicted_temp'])
-    
-    # Find common time range where all collector types have data
-    type_counts = valid_data.groupby(['Timestamp', 'bhe_type']).size().unstack(fill_value=0)
-    common_times = type_counts[(type_counts > 0).sum(axis=1) >= 2].index
-    
-    if len(common_times) > 1000:
-        common_times = common_times[-1000:]  # Last 1000 time points for clarity
-    
-    plot_data = valid_data[valid_data['Timestamp'].isin(common_times)].copy()
-    
-    if len(plot_data) == 0:
-        logging.warning("No valid data for comparison plot")
-        return
-    
-    # Professional color scheme
+
+    valid_data = test_data.dropna(subset=['predicted_temp']).copy()
+    if valid_data.empty:
+        logging.warning("No valid data for comprehensive collector analysis")
+        return None
+
+    prediction_start = valid_data['Timestamp'].min()
+    prediction_end = valid_data['Timestamp'].max()
+    logging.info(
+        "Forecast evaluation span detected from %s to %s",
+        prediction_start,
+        prediction_end
+    )
+
     colors = {
-        'single_u45mm': '#2E86AB',      # Deep blue
-        'double_u45mm': '#A23B72',      # Deep magenta 
-        'muovi_ellipse_63mm': '#F18F01' # Orange
+        'single_u45mm': '#2E86AB',
+        'double_u45mm': '#A23B72',
+        'muovi_ellipse_63mm': '#F18F01'
     }
-    
-    # Create figure with 2x3 subplots
-    fig = plt.figure(figsize=(20, 12))
-    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
-    
-    # Plot 1: Time series comparison (spans 2 columns)
-    ax1 = fig.add_subplot(gs[0, :2])
-    
-    for bhe_type in plot_data['bhe_type'].unique():
-        type_data = plot_data[plot_data['bhe_type'] == bhe_type].sort_values('Timestamp')
-        
-        if len(type_data) == 0:
+
+    labels = {
+        'single_u45mm': 'Single U45mm (Complete Field)',
+        'double_u45mm': 'Double U45mm (Research)',
+        'muovi_ellipse_63mm': 'MuoviEllipse 63mm (Research)'
+    }
+
+    default_order = ['single_u45mm', 'double_u45mm', 'muovi_ellipse_63mm']
+    available_types = list(valid_data['bhe_type'].unique())
+    collector_order = [t for t in default_order if t in available_types]
+    collector_order.extend([t for t in available_types if t not in collector_order])
+
+    collector_segments: Dict[str, Dict[str, pd.DataFrame]] = {}
+    collector_metrics: Dict[str, Dict[str, float]] = {}
+
+    for bhe_type in collector_order:
+        type_forecast = valid_data[valid_data['bhe_type'] == bhe_type].sort_values('Timestamp')
+        if type_forecast.empty:
             continue
-        
-        color = colors.get(bhe_type, '#333333')
-        label = bhe_type.replace('_', ' ').replace('mm', 'mm').title()
-        
-        # Plot actual temperatures
-        ax1.plot(type_data['Timestamp'], type_data['actual_temp'], 
-               color=color, alpha=0.8, linewidth=2.5, label=f'Actual {label}')
-        
-        # Plot predicted temperatures
-        ax1.plot(type_data['Timestamp'], type_data['predicted_temp'], 
-               color=color, alpha=0.6, linewidth=2, linestyle='--', 
-               label=f'Predicted {label}')
-    
-    ax1.set_xlabel('Time', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Outlet Temperature (°C)', fontsize=12, fontweight='bold')
-    ax1.set_title('Actual vs Predicted Temperature for Wells with Different Collector Configuration', fontsize=14, fontweight='bold')
-    ax1.legend(fontsize=10, loc='upper left')
-    ax1.grid(True, alpha=0.3)
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
-    
-    # Plot 2: Performance metrics comparison
-    ax2 = fig.add_subplot(gs[0, 2])
-    
-    collector_types = []
-    mean_temps = []
-    temp_benefits = []
-    
-    for bhe_type in plot_data['bhe_type'].unique():
-        type_data = plot_data[plot_data['bhe_type'] == bhe_type]
-        collector_types.append(bhe_type.replace('_', ' ').title())
-        mean_temps.append(type_data['predicted_temp'].mean())
-    
-    # Calculate relative benefits
-    if len(mean_temps) > 1:
-        baseline = min(mean_temps)
-        temp_benefits = [temp - baseline for temp in mean_temps]
-    else:
-        temp_benefits = [0] * len(mean_temps)
-    
-    bars = ax2.bar(range(len(collector_types)), temp_benefits, 
-                   color=[colors.get(k.lower().replace(' ', '_').replace('mm', 'mm'), '#333333') 
-                         for k in [t.lower().replace(' ', '_') for t in collector_types]])
-    
-    ax2.set_xlabel('Collector Type', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Temperature Benefit (°C)', fontsize=12, fontweight='bold')
-    ax2.set_title('Relative Performance Benefits', fontsize=14, fontweight='bold')
-    ax2.set_xticks(range(len(collector_types)))
-    ax2.set_xticklabels(collector_types, rotation=45, ha='right')
-    ax2.grid(True, alpha=0.3, axis='y')
-    
-    # Add value labels on bars
-    for i, (bar, benefit) in enumerate(zip(bars, temp_benefits)):
-        height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                f'+{benefit:.3f}°C', ha='center', va='bottom', fontweight='bold')
-    
-    # Plot 3: Heat transfer efficiency analysis
-    ax3 = fig.add_subplot(gs[1, 0])
-    
-    efficiency_data = []
-    efficiency_labels = []
-    
-    for bhe_type in plot_data['bhe_type'].unique():
-        type_data = plot_data[plot_data['bhe_type'] == bhe_type]
-        # Calculate heat transfer efficiency as temperature difference per unit power
-        temp_diff = type_data['return_temp'] - type_data['supply_temp']
-        power_abs = np.abs(type_data['power_kw'])
-        efficiency = temp_diff / (power_abs + 1e-6)  # Avoid division by zero
-        
-        efficiency_data.append(efficiency.mean())
-        efficiency_labels.append(bhe_type.replace('_', ' ').title())
-    
-    bars3 = ax3.bar(range(len(efficiency_labels)), efficiency_data,
-                    color=[colors.get(k.lower().replace(' ', '_').replace('mm', 'mm'), '#333333') 
-                          for k in [t.lower().replace(' ', '_') for t in efficiency_labels]])
-    
-    ax3.set_xlabel('Collector Type', fontsize=12, fontweight='bold')
-    ax3.set_ylabel('Heat Transfer Efficiency\n(°C/kW)', fontsize=12, fontweight='bold')
-    ax3.set_title('Heat Transfer Efficiency', fontsize=14, fontweight='bold')
-    ax3.set_xticks(range(len(efficiency_labels)))
-    ax3.set_xticklabels(efficiency_labels, rotation=45, ha='right')
-    ax3.grid(True, alpha=0.3, axis='y')
-    
-    # Plot 4: Flow rate response analysis
-    ax4 = fig.add_subplot(gs[1, 1])
-    
-    flow_response_data = {}
-    for bhe_type in plot_data['bhe_type'].unique():
-        type_data = plot_data[plot_data['bhe_type'] == bhe_type]
-        
-        # Calculate temperature response vs flow rate
-        flow_bins = np.linspace(type_data['flow_rate'].min(), type_data['flow_rate'].max(), 5)
-        temp_response = []
-        
-        for i in range(len(flow_bins)-1):
-            mask = (type_data['flow_rate'] >= flow_bins[i]) & (type_data['flow_rate'] < flow_bins[i+1])
-            if mask.sum() > 0:
-                temp_response.append(type_data[mask]['return_temp'].mean())
-            else:
-                temp_response.append(np.nan)
-        
-        flow_response_data[bhe_type] = {
-            'flow_bins': (flow_bins[:-1] + flow_bins[1:]) / 2,
-            'temp_response': temp_response
+
+        forecast_segment = type_forecast.copy()
+        if forecast_hours is not None:
+            forecast_limit = prediction_start + pd.Timedelta(hours=forecast_hours)
+            limited_segment = forecast_segment[forecast_segment['Timestamp'] <= forecast_limit]
+            if not limited_segment.empty:
+                forecast_segment = limited_segment
+        forecast_segment['phase'] = 'forecast'
+
+        base_train = full_df[
+            (full_df['bhe_type'] == bhe_type) & (full_df['Timestamp'] < prediction_start)
+        ].copy()
+        base_train = base_train.dropna(subset=['return_temp'])
+        base_train = base_train.sort_values('Timestamp')
+
+        if train_history_hours is not None and not base_train.empty:
+            history_cutoff = prediction_start - pd.Timedelta(hours=train_history_hours)
+            train_segment = base_train[base_train['Timestamp'] >= history_cutoff]
+            if train_segment.empty:
+                train_segment = base_train.tail(min(len(base_train), 3 * SEQ_LEN))
+        else:
+            train_segment = base_train
+
+        if not train_segment.empty:
+            train_segment = train_segment.copy()
+            train_segment['actual_temp'] = train_segment['return_temp']
+            train_segment['predicted_temp'] = np.nan
+            train_segment['phase'] = 'training'
+        else:
+            train_segment = pd.DataFrame(columns=['Timestamp', 'actual_temp', 'predicted_temp', 'phase'])
+
+        collector_segments[bhe_type] = {
+            'train': train_segment,
+            'forecast': forecast_segment
         }
-    
-    for bhe_type, data in flow_response_data.items():
+
+        metric_mask = ~(forecast_segment['predicted_temp'].isna() | forecast_segment['actual_temp'].isna())
+        if metric_mask.sum() == 0:
+            continue
+        mae = mean_absolute_error(
+            forecast_segment.loc[metric_mask, 'actual_temp'],
+            forecast_segment.loc[metric_mask, 'predicted_temp']
+        )
+        rmse = np.sqrt(
+            mean_squared_error(
+                forecast_segment.loc[metric_mask, 'actual_temp'],
+                forecast_segment.loc[metric_mask, 'predicted_temp']
+            )
+        )
+        collector_metrics[bhe_type] = {
+            'mae': mae,
+            'rmse': rmse,
+            'count': int(metric_mask.sum()),
+            'train_samples': int(len(base_train))
+        }
+
+    if not collector_segments:
+        logging.warning("No collector segments available for plotting")
+        return None
+
+    num_collectors = len(collector_segments)
+    fig_height = 4.2 * num_collectors + 3
+    fig = plt.figure(figsize=(18, fig_height))
+    gs = fig.add_gridspec(num_collectors + 1, 1,
+                          height_ratios=[3.1] * num_collectors + [1.8],
+                          hspace=0.35)
+
+    for idx, bhe_type in enumerate(collector_order):
+        segments = collector_segments.get(bhe_type)
+        if segments is None:
+            continue
+
+        train_segment = segments['train']
+        forecast_segment = segments['forecast']
+        if forecast_segment.empty:
+            continue
+
+        ax = fig.add_subplot(gs[idx, 0])
         color = colors.get(bhe_type, '#333333')
-        label = bhe_type.replace('_', ' ').title()
-        ax4.plot(data['flow_bins'], data['temp_response'], 
-                color=color, marker='o', linewidth=2.5, markersize=6, label=label)
-    
-    ax4.set_xlabel('Flow Rate (m³/h)', fontsize=12, fontweight='bold')
-    ax4.set_ylabel('Return Temperature (°C)', fontsize=12, fontweight='bold')
-    ax4.set_title('Flow Rate Response', fontsize=14, fontweight='bold')
-    ax4.legend(fontsize=10)
-    ax4.grid(True, alpha=0.3)
-    
-    # Plot 5: Statistical performance summary
-    ax5 = fig.add_subplot(gs[1, 2])
-    
-    # Calculate prediction accuracy for each collector type
-    mae_by_type = {}
-    rmse_by_type = {}
-    
-    for bhe_type in plot_data['bhe_type'].unique():
-        type_data = plot_data[plot_data['bhe_type'] == bhe_type]
-        valid_mask = ~(np.isnan(type_data['predicted_temp']) | np.isnan(type_data['actual_temp']))
-        
-        if valid_mask.sum() > 0:
-            pred_vals = type_data[valid_mask]['predicted_temp']
-            actual_vals = type_data[valid_mask]['actual_temp']
-            
-            mae_by_type[bhe_type] = mean_absolute_error(actual_vals, pred_vals)
-            rmse_by_type[bhe_type] = np.sqrt(mean_squared_error(actual_vals, pred_vals))
-    
-    types = list(mae_by_type.keys())
-    mae_vals = [mae_by_type[t] for t in types]
-    rmse_vals = [rmse_by_type[t] for t in types]
-    
-    x_pos = np.arange(len(types))
-    width = 0.35
-    
-    bars1 = ax5.bar(x_pos - width/2, mae_vals, width, label='MAE', 
-                    color='#4CAF50', alpha=0.8)
-    bars2 = ax5.bar(x_pos + width/2, rmse_vals, width, label='RMSE', 
-                    color='#FF9800', alpha=0.8)
-    
-    ax5.set_xlabel('Collector Type', fontsize=12, fontweight='bold')
-    ax5.set_ylabel('Prediction Error (°C)', fontsize=12, fontweight='bold')
-    ax5.set_title('Model Accuracy by Collector Type', fontsize=14, fontweight='bold')
-    ax5.set_xticks(x_pos)
-    ax5.set_xticklabels([t.replace('_', ' ').title() for t in types], rotation=45, ha='right')
-    ax5.legend()
-    ax5.grid(True, alpha=0.3, axis='y')
-    
-    # Add summary statistics
-    if 'muovi_ellipse_63mm' in config_analysis and 'double_u45mm' in config_analysis:
-        muovi_temp = config_analysis['muovi_ellipse_63mm']['avg_return_temp']
-        double_temp = config_analysis['double_u45mm']['avg_return_temp']
-        benefit = muovi_temp - double_temp
-        
-        fig.suptitle(f'Comprehensive Collector Configuration Analysis\n'
-                    f'MuoviEllipse 63mm vs Double U 45mm: {benefit:+.3f}°C benefit',
-                    fontsize=16, fontweight='bold', y=0.95)
-    else:
-        fig.suptitle('Comprehensive Collector Configuration Analysis', 
-                    fontsize=16, fontweight='bold', y=0.95)
-    
+        label = labels.get(bhe_type, bhe_type)
+
+        handles = []
+        legend_labels = []
+
+        if not train_segment.empty:
+            train_line, = ax.plot(
+                train_segment['Timestamp'],
+                train_segment['actual_temp'],
+                color=color,
+                linewidth=1.2,
+                alpha=0.4,
+                label='Training Actual'
+            )
+            handles.append(train_line)
+            legend_labels.append('Training Actual')
+
+        forecast_actual_line, = ax.plot(
+            forecast_segment['Timestamp'],
+            forecast_segment['actual_temp'],
+            color=color,
+            linewidth=1.5,
+            alpha=0.85,
+            label='Forecast Actual'
+        )
+        handles.append(forecast_actual_line)
+        legend_labels.append('Forecast Actual')
+
+        forecast_pred_line, = ax.plot(
+            forecast_segment['Timestamp'],
+            forecast_segment['predicted_temp'],
+            color=color,
+            linestyle='--',
+            linewidth=1.8,
+            alpha=0.9,
+            label='Prediction'
+        )
+        handles.append(forecast_pred_line)
+        legend_labels.append('Prediction')
+
+        forecast_end_time = forecast_segment['Timestamp'].max()
+        ax.axvline(prediction_start, color='#4f4f4f', linestyle='--', linewidth=1.1, alpha=0.8)
+        ax.axvspan(prediction_start, forecast_end_time, color=color, alpha=0.05)
+        ax.text(
+            prediction_start,
+            0.97,
+            'Forecast start',
+            transform=ax.get_xaxis_transform(),
+            fontsize=10,
+            ha='left',
+            va='top',
+            color='#4f4f4f'
+        )
+
+        ax.set_title(label, fontsize=14, fontweight='bold', pad=12)
+        ax.set_ylabel('Outlet Temperature (°C)', fontsize=12)
+        ax.grid(True, alpha=0.25)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+
+        if handles and idx == 0:
+            ax.legend(handles, legend_labels, loc='upper left', fontsize=10)
+
+        metrics = collector_metrics.get(bhe_type)
+        if metrics is not None:
+            ax.text(
+                0.98,
+                0.95,
+                f"MAE: {metrics['mae']:.3f}°C\nRMSE: {metrics['rmse']:.3f}°C\nTrain Samples: {metrics['train_samples']:,}\nForecast Samples: {metrics['count']:,}",
+                transform=ax.transAxes,
+                fontsize=11,
+                ha='right',
+                va='top',
+                bbox=dict(facecolor='white', alpha=0.85, boxstyle='round,pad=0.4')
+            )
+
+        if not train_segment.empty:
+            x_min = train_segment['Timestamp'].min()
+        else:
+            x_min = forecast_segment['Timestamp'].min()
+        x_max = forecast_segment['Timestamp'].max()
+        ax.set_xlim(x_min, x_max)
+
+        if idx == num_collectors - 1:
+            ax.set_xlabel('Time', fontsize=12, labelpad=10)
+        else:
+            ax.set_xlabel('')
+
+    summary_ax = fig.add_subplot(gs[-1, 0])
+    summary_ax.axis('off')
+    summary_ax.text(
+        0.5,
+        0.9,
+        'Model Prediction Metrics (Forecast Window)',
+        fontsize=14,
+        fontweight='bold',
+        ha='center',
+        va='top',
+        transform=summary_ax.transAxes
+    )
+
+    table_rows = []
+    for bhe_type in collector_order:
+        metrics = collector_metrics.get(bhe_type)
+        if metrics is None:
+            continue
+        table_rows.append([
+            labels.get(bhe_type, bhe_type),
+            f"{metrics['mae']:.3f}°C",
+            f"{metrics['rmse']:.3f}°C",
+            f"{metrics['train_samples']:,}",
+            f"{metrics['count']:,}"
+        ])
+
+    table = summary_ax.table(
+        cellText=table_rows,
+        colLabels=['Collector', 'MAE', 'RMSE', 'Training Samples', 'Forecast Samples'],
+        loc='center',
+        cellLoc='center',
+        bbox=[0.05, 0.0, 0.9, 0.75]
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(11)
+    table.scale(1, 1.2)
+
     plt.tight_layout()
-    
-    # Save comprehensive plot
+
     plot_path = os.path.join(OUTPUT_DIR, 'comprehensive_collector_analysis.png')
     plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close()
-    
-    logging.info(f"Comprehensive collector analysis saved to: {plot_path}")
-    
+
+    logging.info("Comprehensive collector analysis saved to: %s", plot_path)
+
+    print("\n" + "=" * 80)
+    print("COMPREHENSIVE COLLECTOR ANALYSIS SUMMARY")
+    print("=" * 80)
+
+    for bhe_type in collector_order:
+        metrics = collector_metrics.get(bhe_type)
+        if metrics is None:
+            continue
+        label = labels.get(bhe_type, bhe_type)
+        print(f"  {label}:")
+        print(f"    MAE: {metrics['mae']:.4f}°C")
+        print(f"    RMSE: {metrics['rmse']:.4f}°C")
+    print(f"    Training Samples: {metrics['train_samples']:,}")
+    print(f"    Forecast Samples: {metrics['count']:,}")
+
+    print("=" * 80)
+
     return plot_path
 
 def create_collector_performance_analysis(all_data_clean):
-    """Create collector configuration performance plots with 20-point moving averages and MAE/RMSE comparison."""
+    """Create collector configuration performance plots with smoothed data and MAE/RMSE comparison."""
     
     logging.info("Creating collector configuration performance analysis...")
     
-    # Prepare data with 20-point moving averages
+    # Prepare data with smoothed averages
     performance_data = {}
     
+    window_size = 12
+
     for bhe_type, data in all_data_clean.items():
         if len(data) == 0:
             continue
             
         # Calculate temperature difference
         temp_diff = data['supply_temp'] - data['return_temp']
-        
-        # Apply 20-point moving average
-        window_size = 20
+
+        # Apply gentle smoothing (12-point moving average ≈ one hour)
         temp_diff_smooth = temp_diff.rolling(window=window_size, center=True, min_periods=1).mean()
         supply_smooth = data['supply_temp'].rolling(window=window_size, center=True, min_periods=1).mean()
         return_smooth = data['return_temp'].rolling(window=window_size, center=True, min_periods=1).mean()
@@ -981,7 +1050,7 @@ def create_collector_performance_analysis(all_data_clean):
         'muovi_ellipse_63mm': 'MuoviEllipse 63mm (Research)'
     }
     
-    # Plot 1: Temperature Response Time Series (with moving averages)
+    # Plot 1: Temperature Response Time Series (with smoothed data)
     ax1 = fig.add_subplot(gs[0, :2])
     
     for bhe_type, data in performance_data.items():
@@ -990,12 +1059,12 @@ def create_collector_performance_analysis(all_data_clean):
         
         # Plot smoothed temperature difference
         ax1.plot(data['timestamps'], data['temp_diff_smooth'], 
-                color=color, alpha=0.9, linewidth=2.5, label=f'{label} (20-pt avg)')
+                color=color, alpha=0.9, linewidth=2.5, label=label)
     
     ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
     ax1.set_xlabel('Time', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Temperature Difference (°C)', fontsize=12, fontweight='bold')
-    ax1.set_title('BHE Temperature Response by Collector Configuration (20-Point Moving Average)', 
+    ax1.set_title('BHE Temperature Response by Collector Configuration (Smoothed)', 
                  fontsize=14, fontweight='bold')
     ax1.legend(fontsize=10, loc='upper right')
     ax1.grid(True, alpha=0.3)
@@ -1130,36 +1199,74 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
     """Create MAE/RMSE comparison plots for different collector configurations."""
     
     logging.info("Creating model performance comparison by collector type...")
+    logging.info(f"Input data: test_df shape={test_df.shape}, predictions length={len(predictions)}, targets length={len(targets)}")
     
-    # Calculate metrics per collector type
+    # Use the same approach as comprehensive_collector_analysis
+    # Prepare test data with predictions
+    test_data = test_df.copy()
+    
+    # Add predictions with proper alignment
+    if len(predictions) < len(test_data):
+        logging.info(f"Padding predictions: {len(predictions)} -> {len(test_data)}")
+        padded_predictions = np.full(len(test_data), np.nan)
+        padded_predictions[-len(predictions):] = predictions
+        test_data['predicted_temp'] = padded_predictions
+    else:
+        test_data['predicted_temp'] = predictions[:len(test_data)]
+    
+    test_data['actual_temp'] = test_data['return_temp']
+    
+    # Filter for valid data
+    valid_data = test_data.dropna(subset=['predicted_temp'])
+    logging.info(f"Valid data after filtering: {len(valid_data)} rows")
+    
+    # Calculate metrics per collector type (same logic as comprehensive analysis)
     collector_metrics = {}
     
-    for bhe_type in test_df['bhe_type'].unique():
-        type_mask = test_df['bhe_type'] == bhe_type
-        type_indices = test_df.index[type_mask]
+    for bhe_type in valid_data['bhe_type'].unique():
+        type_data = valid_data[valid_data['bhe_type'] == bhe_type]
+        valid_mask = ~(np.isnan(type_data['predicted_temp']) | np.isnan(type_data['actual_temp']))
         
-        # Get predictions and targets for this collector type
-        if len(predictions) >= len(test_df):
-            type_predictions = predictions[type_indices]
-            type_targets = targets[type_indices]
-        else:
-            # Handle case where predictions array is shorter
-            valid_indices = type_indices[type_indices < len(predictions)]
-            if len(valid_indices) == 0:
-                continue
-            type_predictions = predictions[valid_indices]
-            type_targets = targets[valid_indices]
-        
-        # Calculate metrics
-        mae = mean_absolute_error(type_targets, type_predictions)
-        rmse = np.sqrt(mean_squared_error(type_targets, type_predictions))
-        
-        collector_metrics[bhe_type] = {
-            'mae': mae,
-            'rmse': rmse,
-            'count': len(type_predictions)
-        }
+        if valid_mask.sum() > 0:
+            pred_vals = type_data[valid_mask]['predicted_temp']
+            actual_vals = type_data[valid_mask]['actual_temp']
+            
+            mae = mean_absolute_error(actual_vals, pred_vals)
+            rmse = np.sqrt(mean_squared_error(actual_vals, pred_vals))
+            
+            collector_metrics[bhe_type] = {
+                'mae': mae,
+                'rmse': rmse,
+                'count': len(pred_vals)
+            }
+            logging.info(f"{bhe_type}: MAE={mae:.4f}, RMSE={rmse:.4f}, count={len(pred_vals)}")
     
+    # Check if we have any data to plot
+    if not collector_metrics:
+        logging.error("No collector metrics calculated - no data to plot!")
+        # Create empty plot with error message
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        ax1.text(0.5, 0.5, 'No data available\nfor MAE comparison\n\nCheck data alignment\nbetween predictions and test data', 
+                ha='center', va='center', transform=ax1.transAxes, fontsize=12)
+        ax2.text(0.5, 0.5, 'No data available\nfor RMSE comparison\n\nCheck data alignment\nbetween predictions and test data', 
+                ha='center', va='center', transform=ax2.transAxes, fontsize=12)
+        ax1.set_title('Model Accuracy: MAE Comparison', fontsize=14, fontweight='bold')
+        ax2.set_title('Model Accuracy: RMSE Comparison', fontsize=14, fontweight='bold')
+        ax1.set_xlim(0, 1)
+        ax1.set_ylim(0, 1)
+        ax2.set_xlim(0, 1)
+        ax2.set_ylim(0, 1)
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = os.path.join(OUTPUT_DIR, 'model_performance_comparison.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close()
+        
+        return plot_path, {}
+    
+    logging.info(f"Successfully calculated metrics for {len(collector_metrics)} collector types")
+
     # Create comparison plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
@@ -1253,11 +1360,11 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     # Create comprehensive analysis figure
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
-    # Temperature difference comparison with 20-point moving averages
+    # Temperature difference comparison with smoothed data
     ax1 = axes[0, 0]
     
-    # Apply 20-point moving averages
-    window_size = 20
+    # Apply smoothing (12-point moving averages)
+    window_size = 12
     complete_smooth = complete_temp_diff.rolling(window=window_size, center=True, min_periods=1).mean()
     double_smooth = double_temp_diff.rolling(window=window_size, center=True, min_periods=1).mean()
     muovi_smooth = muovi_temp_diff.rolling(window=window_size, center=True, min_periods=1).mean()
@@ -1272,7 +1379,7 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     ax1.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=0.8)
     ax1.set_xlabel('Time', fontweight='bold')
     ax1.set_ylabel('Temperature Difference (°C)', fontweight='bold')
-    ax1.set_title('BHE Temperature Response (20-Point Moving Average)', fontweight='bold')
+    ax1.set_title('BHE Temperature Response (Smoothed)', fontweight='bold')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
@@ -1384,11 +1491,11 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     
     # Temperature profiles comparison
     ax1.plot(complete_field['Timestamp'], complete_temp_diff, 
-             label='Single U45mm (Complete Field)', color='#2E86AB', alpha=0.7, linewidth=1)
+             label='Single U45mm (Complete Field)', color='#2E86AB', alpha=0.6, linewidth=1)
     ax1.plot(double_u45['Timestamp'], double_temp_diff, 
-             label='Double U45mm (Research)', color='#A23B72', alpha=0.8, linewidth=1)
+             label='Double U45mm (Research)', color='#A23B72', alpha=0.7, linewidth=1)
     ax1.plot(muovi_ellipse['Timestamp'], muovi_temp_diff, 
-             label='MuoviEllipse 63mm (Research)', color='#F18F01', alpha=0.8, linewidth=1)
+             label='MuoviEllipse 63mm (Research)', color='#F18F01', alpha=0.7, linewidth=1)
     
     ax1.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=0.8)
     ax1.set_xlabel('Time', fontweight='bold')
@@ -1823,16 +1930,30 @@ def main():
     
     logging.info(f"Model data: {len(model_data)} records with {len(feature_cols)} features")
     
-    # Train/validation/test split (chronological)
-    n = len(model_data)
-    train_end = int(n * (1 - VAL_SPLIT - TEST_SPLIT))
-    val_end = int(n * (1 - TEST_SPLIT))
-    
-    train_df = model_data.iloc[:train_end].copy()
-    val_df = model_data.iloc[train_end:val_end].copy()
-    test_df = model_data.iloc[val_end:].copy()
-    
-    logging.info(f"Data splits: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
+    # Time-based train/validation/test split
+    latest_timestamp = model_data['Timestamp'].max()
+    test_start = latest_timestamp - pd.Timedelta(days=FORECAST_WINDOW_DAYS)
+    val_start = test_start - pd.Timedelta(days=VALIDATION_WINDOW_DAYS)
+
+    train_df = model_data[model_data['Timestamp'] < val_start].copy()
+    val_df = model_data[(model_data['Timestamp'] >= val_start) & (model_data['Timestamp'] < test_start)].copy()
+    test_df = model_data[model_data['Timestamp'] >= test_start].copy()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise ValueError(
+            "Time-based split produced an empty subset. Check that the dataset covers the requested windows."
+        )
+
+    logging.info(
+        "Data splits (time-based): Train=%d (up to %s), Val=%d (%s to %s), Test=%d (from %s)",
+        len(train_df),
+        val_start,
+        len(val_df),
+        val_start,
+        test_start,
+        len(test_df),
+        test_start
+    )
     
     # Create datasets
     train_dataset = ComprehensiveDataset(train_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col)
@@ -1912,7 +2033,14 @@ def main():
     # Create comprehensive collector analysis
     print("Creating comprehensive collector analysis...")
     comprehensive_plot_path = create_comprehensive_collector_analysis(
-        test_df, predictions, targets, feature_cols, config_analysis)
+        combined_data,
+        test_df,
+        predictions,
+        targets,
+        feature_cols,
+        config_analysis,
+        train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+        forecast_hours=FORECAST_WINDOW_HOURS)
     
     # Save results
     results = {
@@ -1964,16 +2092,30 @@ def main():
     
     logging.info(f"Model data: {len(model_data)} records with {len(feature_cols)} features")
     
-    # Train/validation/test split (chronological)
-    n = len(model_data)
-    train_end = int(n * (1 - VAL_SPLIT - TEST_SPLIT))
-    val_end = int(n * (1 - TEST_SPLIT))
-    
-    train_df = model_data.iloc[:train_end].copy()
-    val_df = model_data.iloc[train_end:val_end].copy()
-    test_df = model_data.iloc[val_end:].copy()
-    
-    logging.info(f"Data splits: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}")
+    # Time-based train/validation/test split
+    latest_timestamp = model_data['Timestamp'].max()
+    test_start = latest_timestamp - pd.Timedelta(days=FORECAST_WINDOW_DAYS)
+    val_start = test_start - pd.Timedelta(days=VALIDATION_WINDOW_DAYS)
+
+    train_df = model_data[model_data['Timestamp'] < val_start].copy()
+    val_df = model_data[(model_data['Timestamp'] >= val_start) & (model_data['Timestamp'] < test_start)].copy()
+    test_df = model_data[model_data['Timestamp'] >= test_start].copy()
+
+    if train_df.empty or val_df.empty or test_df.empty:
+        raise ValueError(
+            "Time-based split produced an empty subset. Check that the dataset covers the requested windows."
+        )
+
+    logging.info(
+        "Data splits (time-based): Train=%d (up to %s), Val=%d (%s to %s), Test=%d (from %s)",
+        len(train_df),
+        val_start,
+        len(val_df),
+        val_start,
+        test_start,
+        len(test_df),
+        test_start
+    )
     
     # Create datasets
     train_dataset = ComprehensiveDataset(train_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col)
@@ -2050,17 +2192,23 @@ def main():
     
     print(f"Test Performance: MAE={mae:.4f}°C, RMSE={rmse:.4f}°C")
     logging.info(f"Test Performance: MAE={mae:.4f}°C, RMSE={rmse:.4f}°C")
-    
+
     # Create model performance comparison by collector type
     print("Creating model performance comparison...")
     model_plot_path, collector_metrics = create_model_performance_comparison(
         test_df, predictions, targets, config_analysis)
-    
-    # Create comprehensive visualization
+
+    # Create comprehensive visualization (includes all model performance metrics)
     print("Creating comprehensive collector analysis...")
-    create_comprehensive_collector_analysis(test_df, predictions, targets, feature_cols, config_analysis)
-    
-    # Save results
+    comprehensive_plot_path = create_comprehensive_collector_analysis(
+        combined_data,
+        test_df,
+        predictions,
+        targets,
+        feature_cols,
+        config_analysis,
+        train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
+        forecast_hours=FORECAST_WINDOW_HOURS)
     results = {
         'model_performance': {
             'overall_mae': float(mae),

@@ -38,7 +38,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
-EPOCHS = 5
+EPOCHS = 50
 LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
@@ -864,25 +864,29 @@ def create_comprehensive_collector_analysis(
             handles.append(train_line)
             legend_labels.append('Training Actual')
 
+        # Plot actual with thick solid line
         forecast_actual_line, = ax.plot(
             forecast_segment['Timestamp'],
             forecast_segment['actual_temp'],
             color=color,
-            linewidth=1.5,
-            alpha=0.85,
-            label='Forecast Actual'
+            linewidth=2.5,
+            alpha=0.9,
+            label='Forecast Actual',
+            zorder=3
         )
         handles.append(forecast_actual_line)
         legend_labels.append('Forecast Actual')
 
+        # Plot prediction with black dashed line (distinct from actual)
         forecast_pred_line, = ax.plot(
             forecast_segment['Timestamp'],
             forecast_segment['predicted_temp'],
-            color=color,
+            color='black',
             linestyle='--',
-            linewidth=1.8,
-            alpha=0.9,
-            label='Prediction'
+            linewidth=2.0,
+            alpha=0.7,
+            label='Prediction',
+            zorder=4
         )
         handles.append(forecast_pred_line)
         legend_labels.append('Prediction')
@@ -908,7 +912,7 @@ def create_comprehensive_collector_analysis(
         plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
 
         if handles and idx == 0:
-            ax.legend(handles, legend_labels, loc='upper left', fontsize=10)
+            ax.legend(handles, legend_labels, loc='upper left', fontsize=10, framealpha=0.95)
 
         metrics = collector_metrics.get(bhe_type)
         if metrics is not None:
@@ -1575,21 +1579,34 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     # Cross-sectional geometry analysis
     ax5 = axes[1, 1]
     
-    # BHE cross-sectional areas and configurations
+    # BHE configurations
     collectors = ['Single U45mm', 'Double U45mm', 'MuoviEllipse 63mm']
     
-    # Pipe cross-sectional areas (mm²)
-    pipe_areas = [
-        np.pi * (45/2)**2,      # Single U45mm
-        2 * np.pi * (45/2)**2,  # Double U45mm (two pipes)
-        np.pi * (63/2)**2       # MuoviEllipse 63mm
+    # Pipe specifications (outer diameter accounting for wall thickness)
+    # U45: 45mm nominal + 2×2.6mm wall = 50.2mm outer diameter
+    # MuoviEllipse: elliptical cross-section 51mm × 73mm (from technical drawing)
+    borehole_diameter = 140  # mm (actual borehole)
+    
+    # Heat transfer surface area per meter depth
+    u45_outer_diameter = 50.2  # mm (45mm + 2×2.6mm wall)
+    surface_areas_per_m = [
+        2 * np.pi * u45_outer_diameter * 1000,      # Single U45mm: 2 legs
+        4 * np.pi * u45_outer_diameter * 1000,      # Double U45mm: 4 legs (2 U-tubes)
+        np.pi * np.sqrt(51 * 73) * 1000             # MuoviEllipse: approximate with equivalent circle
     ]
     
-    # Typical borehole diameter: 150mm
-    borehole_area = np.pi * (150/2)**2
+    # Pipe cross-sectional area (flow area occupied in borehole)
+    pipe_cross_sections = [
+        2 * np.pi * (u45_outer_diameter/2)**2,      # Single U45mm: 2 pipes
+        4 * np.pi * (u45_outer_diameter/2)**2,      # Double U45mm: 4 pipes
+        np.pi * (51/2) * (73/2)                     # MuoviEllipse: ellipse area
+    ]
     
-    # Flow area ratios
-    flow_ratios = [area / borehole_area for area in pipe_areas]
+    borehole_cross_section = np.pi * (borehole_diameter/2)**2
+    
+    # Grout volume ratio (thermal coupling efficiency indicator)
+    grout_ratios = [(borehole_cross_section - pipe_area) / borehole_cross_section 
+                    for pipe_area in pipe_cross_sections]
     
     # Average temperature differences
     avg_temp_diffs = [
@@ -1634,21 +1651,26 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     print(f"   Double U45mm:      {double_temp_diff.mean():.3f} ± {double_temp_diff.std():.3f} °C")
     print(f"   MuoviEllipse 63mm: {muovi_temp_diff.mean():.3f} ± {muovi_temp_diff.std():.3f} °C")
     
-    print(f"\n3. CROSS-SECTIONAL GEOMETRY:")
+    print(f"\n3. BHE GEOMETRY AND THERMAL PERFORMANCE:")
+    print(f"   Borehole diameter: {borehole_diameter} mm")
+    print(f"   U45 pipe outer diameter: {u45_outer_diameter} mm (45mm + 2×2.6mm wall)\n")
+    
     for i, collector in enumerate(collectors):
         print(f"   {collector}:")
-        print(f"      Pipe area: {pipe_areas[i]:.0f} mm²")
-        print(f"      Flow area ratio: {flow_ratios[i]:.3f}")
+        print(f"      Heat transfer surface: {surface_areas_per_m[i]:,.0f} mm²/m")
+        print(f"      Pipe cross-section: {pipe_cross_sections[i]:,.0f} mm²")
+        print(f"      Grout fill ratio: {grout_ratios[i]:.1%}")
         print(f"      Avg |ΔT|: {avg_temp_diffs[i]:.3f} °C")
     
     print(f"\n4. OPERATIONAL MODES:")
-    complete_extraction = (complete_temp_diff < 0).mean() * 100
-    double_rejection = (double_temp_diff > 0).mean() * 100
-    muovi_rejection = (muovi_temp_diff > 0).mean() * 100
+    # Heat extraction: supply > return (positive temp_diff), negative power
+    complete_extraction = (complete_temp_diff > 0).mean() * 100
+    double_extraction = (double_temp_diff > 0).mean() * 100
+    muovi_extraction = (muovi_temp_diff > 0).mean() * 100
     
     print(f"   Single U45mm:      {complete_extraction:.1f}% heat extraction mode")
-    print(f"   Double U45mm:      {double_rejection:.1f}% heat rejection mode")
-    print(f"   MuoviEllipse 63mm: {muovi_rejection:.1f}% heat rejection mode")
+    print(f"   Double U45mm:      {double_extraction:.1f}% heat extraction mode")
+    print(f"   MuoviEllipse 63mm: {muovi_extraction:.1f}% heat extraction mode")
     
     print("="*80)
 

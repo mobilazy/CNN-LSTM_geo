@@ -38,7 +38,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
-EPOCHS = 50
+EPOCHS = 10
 LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
@@ -961,7 +961,7 @@ def create_collector_performance_analysis(all_data_clean):
         
         # Plot smoothed temperature difference
         ax1.plot(data['timestamps'], data['temp_diff_smooth'], 
-                color=color, alpha=0.9, linewidth=2.5, label=f'{label} (smoothed)')
+                color=color, alpha=0.9, linewidth=2.5, label=label)
     
     ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
     ax1.set_xlabel('Time', fontsize=12, fontweight='bold')
@@ -1101,36 +1101,74 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
     """Create MAE/RMSE comparison plots for different collector configurations."""
     
     logging.info("Creating model performance comparison by collector type...")
+    logging.info(f"Input data: test_df shape={test_df.shape}, predictions length={len(predictions)}, targets length={len(targets)}")
     
-    # Calculate metrics per collector type
+    # Use the same approach as comprehensive_collector_analysis
+    # Prepare test data with predictions
+    test_data = test_df.copy()
+    
+    # Add predictions with proper alignment
+    if len(predictions) < len(test_data):
+        logging.info(f"Padding predictions: {len(predictions)} -> {len(test_data)}")
+        padded_predictions = np.full(len(test_data), np.nan)
+        padded_predictions[-len(predictions):] = predictions
+        test_data['predicted_temp'] = padded_predictions
+    else:
+        test_data['predicted_temp'] = predictions[:len(test_data)]
+    
+    test_data['actual_temp'] = test_data['return_temp']
+    
+    # Filter for valid data
+    valid_data = test_data.dropna(subset=['predicted_temp'])
+    logging.info(f"Valid data after filtering: {len(valid_data)} rows")
+    
+    # Calculate metrics per collector type (same logic as comprehensive analysis)
     collector_metrics = {}
     
-    for bhe_type in test_df['bhe_type'].unique():
-        type_mask = test_df['bhe_type'] == bhe_type
-        type_indices = test_df.index[type_mask]
+    for bhe_type in valid_data['bhe_type'].unique():
+        type_data = valid_data[valid_data['bhe_type'] == bhe_type]
+        valid_mask = ~(np.isnan(type_data['predicted_temp']) | np.isnan(type_data['actual_temp']))
         
-        # Get predictions and targets for this collector type
-        if len(predictions) >= len(test_df):
-            type_predictions = predictions[type_indices]
-            type_targets = targets[type_indices]
-        else:
-            # Handle case where predictions array is shorter
-            valid_indices = type_indices[type_indices < len(predictions)]
-            if len(valid_indices) == 0:
-                continue
-            type_predictions = predictions[valid_indices]
-            type_targets = targets[valid_indices]
-        
-        # Calculate metrics
-        mae = mean_absolute_error(type_targets, type_predictions)
-        rmse = np.sqrt(mean_squared_error(type_targets, type_predictions))
-        
-        collector_metrics[bhe_type] = {
-            'mae': mae,
-            'rmse': rmse,
-            'count': len(type_predictions)
-        }
+        if valid_mask.sum() > 0:
+            pred_vals = type_data[valid_mask]['predicted_temp']
+            actual_vals = type_data[valid_mask]['actual_temp']
+            
+            mae = mean_absolute_error(actual_vals, pred_vals)
+            rmse = np.sqrt(mean_squared_error(actual_vals, pred_vals))
+            
+            collector_metrics[bhe_type] = {
+                'mae': mae,
+                'rmse': rmse,
+                'count': len(pred_vals)
+            }
+            logging.info(f"{bhe_type}: MAE={mae:.4f}, RMSE={rmse:.4f}, count={len(pred_vals)}")
     
+    # Check if we have any data to plot
+    if not collector_metrics:
+        logging.error("No collector metrics calculated - no data to plot!")
+        # Create empty plot with error message
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        ax1.text(0.5, 0.5, 'No data available\nfor MAE comparison\n\nCheck data alignment\nbetween predictions and test data', 
+                ha='center', va='center', transform=ax1.transAxes, fontsize=12)
+        ax2.text(0.5, 0.5, 'No data available\nfor RMSE comparison\n\nCheck data alignment\nbetween predictions and test data', 
+                ha='center', va='center', transform=ax2.transAxes, fontsize=12)
+        ax1.set_title('Model Accuracy: MAE Comparison', fontsize=14, fontweight='bold')
+        ax2.set_title('Model Accuracy: RMSE Comparison', fontsize=14, fontweight='bold')
+        ax1.set_xlim(0, 1)
+        ax1.set_ylim(0, 1)
+        ax2.set_xlim(0, 1)
+        ax2.set_ylim(0, 1)
+        plt.tight_layout()
+        
+        # Save plot
+        plot_path = os.path.join(OUTPUT_DIR, 'model_performance_comparison.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+        plt.close()
+        
+        return plot_path, {}
+    
+    logging.info(f"Successfully calculated metrics for {len(collector_metrics)} collector types")
+
     # Create comparison plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
