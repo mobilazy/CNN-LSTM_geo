@@ -1,176 +1,349 @@
-# Hybrid CNN-LSTM Model with Attention for Time Series Classification
+# CNN-LSTM Model for Geothermal Borehole Heat Exchanger Analysis
 
 ## Introduction
 
-This documents the training and evaluation of a **Hybrid CNN-LSTM Attention model** for time series classification in a dataset. The model combines convolutional neural networks (CNNs) for feature extraction, long short-term memory (LSTM) networks for sequential modeling, and attention mechanisms to focus on important parts of the sequence. The goal is to classify sequences into different classes based on the provided normalized time-series data.
+This project implements a comprehensive CNN-LSTM deep learning model for predicting return temperatures in geothermal borehole heat exchanger (BHE) systems. The model analyzes three different collector configurations at the University of Stavanger geothermal facility, combining convolutional neural networks for feature extraction with LSTM networks for temporal sequence modeling. The system processes real-world sensor data from 120 production wells and 8 research wells operating at 300m depth.
+
+## System Overview
+
+### Geothermal Installation
+The geothermal system at University of Stavanger consists of:
+- **120 production boreholes** with Single U-tube 45mm configuration (complete field)
+- **4 research boreholes** with Double U-tube 45mm configuration (SKD-110-01 to 04)
+- **4 research boreholes** with MuoviEllipse 63mm configuration (SKD-110-05 to 08)
+- All boreholes reach 300m depth with HX24 energy brine as heat transfer fluid
+- Flow rate: 0.9 L/s per borehole, total system capacity: 1350 kW
+
+### Data Collection
+Sensor measurements collected at 5-minute intervals from three energy meters:
+- **OE401**: Complete field data (120 Single U-45mm wells aggregated)
+- **OE402**: MuoviEllipse 63mm research wells (4 wells aggregated)
+- **OE403**: Double U-45mm research wells (4 wells aggregated)
+
+Time period: January through November 2025, yielding approximately 95,000 measurement cycles per configuration after quality filtering.
 
 ## Model Architecture
 
-The hybrid model consists of:
+The ComprehensiveCNNLSTM model implements a hybrid architecture for time-series regression:
 
-1. **CNN Layers**: Extract spatial features from the time series.
-   - Two convolutional layers (`Conv1d`) with ReLU activations.
-   - Two max-pooling layers (`MaxPool1d`) for downsampling.
-   
-2. **Attention Mechanism**: A spatial attention mechanism highlights the important parts of the sequence, enhancing the model's ability to focus on critical segments of the input.
+### Architecture Components
 
-3. **LSTM Layers**: Process the sequential data to capture temporal dependencies.
-   - LSTM with 1 layers and a hidden size of 8.
+1. **Convolutional Feature Extraction**
+   - Two 1D convolutional layers with progressive channel expansion (32 → 64)
+   - Kernel size: 3 with padding to preserve sequence length
+   - ReLU activation, batch normalization, and dropout (0.1) after each layer
+   - Extracts hierarchical temporal patterns while maintaining full sequence context
 
-4. **Fully Connected (FC) Layer**: Used to map the output of the LSTM to 4 class labels.
+2. **LSTM Temporal Modeling**
+   - 2-layer bidirectional LSTM with 64 hidden units per layer
+   - Dropout of 0.1 between LSTM layers
+   - Processes 48-timestep sequences (4 hours at 5-minute intervals)
+   - Captures long-term dependencies in thermal dynamics
 
-The **model parameters** are:
-- Input size: 8
-- CNN Channels: 16
-- LSTM Hidden Size: 8
-- LSTM Layers: 1
-- Output Size: 4
+3. **Output Layer**
+   - Fully connected linear layer mapping from 64 to 1 dimension
+   - Predicts single-step ahead return temperature (regression task)
 
-## Dataset
+### Model Hyperparameters
+- **Input features**: 4 (supply_temp, flow_rate, power_kw, bhe_type_encoded)
+- **Sequence length**: 48 time steps (4 hours)
+- **CNN channels**: [32, 64]
+- **LSTM hidden size**: 64
+- **LSTM layers**: 2
+- **Dropout**: 0.1
+- **Total parameters**: 75,489 trainable parameters
 
-The dataset consists of time series data that has been normalized. Separate CSV files are used for training and testing:
-- **Training Data**: `train.csv`
-- **Testing Data**: `test.csv`
+## Data Processing Pipeline
 
-The dataset is loaded using a custom `CustomDataset` class and fed into the model using `DataLoader`. Each batch size is set to 32.
+### Input Data Sources
+Located in `input/` directory:
+- `MeterOE401_singleU45.csv` - Complete field data (120 Single U-45mm wells)
+- `MeterOE402_Ellipse63.csv` - MuoviEllipse 63mm research wells
+- `MeterOE403_doubleU45.csv` - Double U-45mm research wells
 
-## Training Process
+### Eight-Stage Data Cleaning Process
 
-The model is trained for 200 epochs with the following configurations:
-- **Optimizer**: SGD (Stochastic Gradient Descent) with a learning rate of 0.01.
-- **Loss Function**: Cross-Entropy Loss to handle multi-class classification.
+1. **Numeric Conversion**: Raw CSV data converted to floating-point with original sensor precision
+2. **Physical Constraint Validation**: 
+   - Temperatures: -10°C to 50°C
+   - Power: -500 to 500 kW per well
+   - Flow rates: positive, below 100 m³/h per well
+3. **Sensor Anomaly Detection**: Flag sequences with >18 identical consecutive readings (90 minutes)
+4. **Median Filtering**: 
+   - 3-point (15-minute) for temperatures
+   - 5-point (25-minute) for power and flow rate
+5. **Gap Interpolation**: Linear interpolation for gaps up to 4 readings (20 minutes)
+6. **Physics Validation**: Verify temperature-power consistency for heating/cooling modes
+7. **Missing Data Threshold**: Require 80% valid measurements (complete field) or 50% (research wells)
+8. **Final Quality Assurance**: Remove invalid entries, verify time ordering
 
-### Key Steps in the Training Loop:
-1. **Training Phase**: 
-   - The model's weights are updated based on training data using backpropagation.
-   - Training loss and accuracy are calculated after each epoch.
+### Dataset Statistics
+- **Raw dataset**: ~315,000 combined measurements
+- **After cleaning**: 190,732 records with timestamp alignment
+- **Training set**: 171,542 sequences
+- **Validation set**: 4,943 sequences (7-day window)
+- **Test set**: 14,247 sequences (21-day forecast window)
 
-2. **Testing Phase**: 
-   - The model is evaluated on the test dataset.
-   - Testing loss and accuracy are tracked.
+## Feature Engineering
 
-The training and testing loss/accuracy values are stored after each epoch for later analysis.
+### Input Features (4 dimensions)
+1. **supply_temp** (°C): Measured temperature at heat pump outlet before entering borehole field
+2. **flow_rate** (m³/h): Volumetric flow rate normalized per well
+   - Complete field: divided by 120 wells
+   - Research sections: divided by 4 wells
+3. **power_kw** (kW): Thermal energy transfer rate per well
+   - Positive values: heat extraction (heating mode)
+   - Negative values: heat rejection (cooling mode)
+4. **bhe_type_encoded**: Categorical encoding of collector configuration
+   - 0: Single U45mm
+   - 1: Double U45mm
+   - 2: MuoviEllipse 63mm
 
-## Results
+### Target Variable
+- **return_temp** (°C): Temperature measured after fluid exits borehole field
 
-After training for 200 epochs, the model's performance is as follows:
+### Temporal Sequence Generation
+- 48-timestep sliding window (4-hour history at 5-minute intervals)
+- Single-step ahead prediction
+- Overlapping sequences with single-step advancement
 
-- **Final Training Accuracy**: Varies based on specific epoch values.
-- **Final Testing Accuracy**: Varies based on specific epoch values.
+## Training Configuration
 
-The loss and accuracy metrics are plotted to visualize the training progress.
+### Hyperparameters
+- **Epochs**: 50
+- **Batch size**: 1024 (optimized for GPU utilization)
+- **Learning rate**: 0.001
+- **Optimizer**: Adam with ReduceLROnPlateau scheduler
+  - Factor: 0.5
+  - Patience: 16 epochs
+- **Loss function**: Mean Squared Error (MSE)
+- **Early stopping patience**: 16 epochs
 
-### Performance Metrics
+### Training Features
+- Mixed precision training (AMP) for CUDA devices
+- GPU memory monitoring and optimization
+- Gradient clipping for stability
+- Best model checkpoint saving based on validation loss
 
-The performance metrics captured during training are:
-- **Training Loss**: Shows how well the model fits the training data.
-- **Testing Loss**: Indicates how well the model generalizes to unseen data.
-- **Training Accuracy**: Measures the percentage of correctly classified training examples.
-- **Testing Accuracy**: Measures the percentage of correctly classified testing examples.
+### Temporal Data Splitting
+- **Training period**: January through early October 2025
+- **Validation window**: 7 days in mid-October (held out for hyperparameter tuning)
+- **Test period**: 21-day forecast window (late October through early November)
+  - Single U45mm: 4,390 sequences
+  - Double U45mm: 4,999 sequences
+  - MuoviEllipse 63mm: 4,810 sequences
 
-## Visualizations
+## Performance Metrics
 
-Plots of the training and testing loss/accuracy over the epochs are generated.
+### Evaluation Metrics
+The model is evaluated using regression metrics for temperature prediction:
 
-### Loss Plot:
-- **Training Loss**: The trend generally decreases as the model learns from the data.
-- **Testing Loss**: A steady decline (or plateau) is expected if the model generalizes well.
+- **MAE (Mean Absolute Error)**: Average of absolute differences between predicted and actual temperatures
+  ```
+  MAE = (1/n) * Σ|y_i - ŷ_i|
+  ```
 
-### Accuracy Plot:
-- **Training Accuracy**: Typically increases over time as the model improves.
-- **Testing Accuracy**: Should follow a similar pattern to training accuracy if the model generalizes well.
+- **RMSE (Root Mean Squared Error)**: Square root of average squared differences (penalizes larger errors)
+  ```
+  RMSE = √[(1/n) * Σ(y_i - ŷ_i)²]
+  ```
 
-Both plots are saved in PNG and PDF formats for documentation purposes.
+### Model Performance by Collector Type
+Performance varies by BHE configuration based on operational characteristics and data quality:
+
+- **Single U45mm (Complete Field)**: Aggregated data from 120 wells provides statistical smoothing
+- **Double U45mm (Research)**: Individual well monitoring with 4-well aggregation
+- **MuoviEllipse 63mm (Research)**: Advanced elliptical design with mixed SDR materials
+
+Performance metrics are calculated on the 21-day forecast window and reported separately for each collector configuration.
+
+## Output Visualizations
+
+All visualizations are saved to the `output/` directory at 300 DPI resolution.
+
+### Generated Plots
+
+1. **comprehensive_collector_analysis.png**
+   - Per-collector time-series comparison showing training history and forecast window
+   - Blends 21 days of training data with 21-day forecast predictions
+   - Vertical line marks transition from training to prediction period
+   - Separate subplots for each BHE configuration
+   - Summary table with MAE, RMSE, and sample counts
+
+2. **model_performance_comparison.png**
+   - Bar charts comparing MAE and RMSE across collector types
+   - Side-by-side comparison for direct performance assessment
+   - Color-coded by collector configuration
+
+3. **training_convergence.png** (via plot_training_convergence.py)
+   - Training and validation loss curves over epochs
+   - Visualizes model convergence and potential overfitting
+
+4. **architecture_diagram.png** (via visualize_architecture.py)
+   - Visual representation of CNN-LSTM model architecture
+   - Shows layer dimensions and data flow
+
+5. **rt514_sensor_recovery.png** (via sensor_recovery_rt514.py)
+   - Demonstrates sensor malfunction detection and recovery
+   - Compares actual sensor readings with CNN-LSTM predictions
+   - Useful for maintenance and quality assurance
 
 ## Model and Data Storage
 
-- **Model**: Saved in `.pth` format for future inference or fine-tuning. 
-- **Training Data**: Saved as a CSV file containing the loss and accuracy values across all epochs.
+### Output Directory Structure
+All outputs are saved to `output/` directory:
 
-The files are stored in predefined output folders:
-- **Model Path**: `Models/HybridCNNLSTMAttention_TS.pth`
-- **Training Data CSV Path**: `CSV/HybridCNNLSTMAttention_TS.csv`
-- **Plot Files**: 
-  - PNG: `Plots/HybridCNNLSTMAttention_TS.png`
-  - PDF: `Plots/HybridCNNLSTMAttention_TS.pdf`
-    
-### save_model Function
+- **comprehensive_model.pth**: Trained model state dictionary (PyTorch format)
+- **comprehensive_results.json**: Training metrics, hyperparameters, and performance statistics
+- **comprehensive_analysis.log**: Detailed execution log with timestamps
+- **Visualization files**: PNG images at 300 DPI resolution
 
-#### Purpose
-The `save_model` function saves a PyTorch model and its associated hyperparameters to a specified file location. This allows for easy storage and later retrieval of the trained model and its configuration for inference or further training.
+### Model Checkpoint Format
+The saved model includes:
+- Model state dictionary with all learned weights
+- Architecture configuration (layers, channels, dropout rates)
+- Training statistics (best validation loss, epoch count)
+- Feature normalization parameters (mean and std for each input)
 
-#### Parameters
-- **output_folder (str):** Path to the directory where the model file will be saved.
-- **model_name (str):** Name of the model file (without extension).
-- **ext (str):** File extension for the saved file (e.g., 'checkpoint', 'final').
-- **model (torch.nn.Module):** The PyTorch model instance to be saved.
-- **input_size (int):** Size of the input feature vector.
-- **cnn_channels (int):** Number of channels in the CNN layers of the model.
-- **num_epochs (int):** Total number of epochs used for training.
-- **output_size (int):** Dimension of the model's output.
-- **lstm_hidden_size (int):** Number of hidden units in the LSTM layers.
-- **learning_rate (float):** Learning rate used for model training.
-- **lstm_num_layers (int):** Number of stacked LSTM layers.
-- **batch_size (int):** Batch size used for training.
+## Usage
 
-#### Returns
-- **str:** The file path where the model was saved.
+### Running the Main Training Script
 
-#### Key Operations
-1. Constructs a file path using the provided folder, model name, and extension.
-2. Saves the model's `state_dict` and hyperparameters into a `.pth` file using `torch.save`.
-3. Prints and returns the path of the saved model.
-
-#### Example Usage
-```python
-model_path = save_model(
-    output_folder="models/",
-    model_name="my_model",
-    ext="checkpoint",
-    model=my_model,
-    input_size=8,
-    cnn_channels=64,
-    num_epochs=50,
-    output_size=4,
-    lstm_hidden_size=256,
-    learning_rate=0.001,
-    lstm_num_layers=2,
-    batch_size=32
-)
-print(f"Model saved at: {model_path}")
-```
-## Conclusion
-
-The **Hybrid CNN-LSTM with Attention** architecture successfully processes time series data for multi-class classification tasks. Both the training and evaluation processes are automated, and the results are well-documented through plots and saved models.
-
-### Future Work:
-- **Hyperparameter Tuning**: Explore different values for learning rates, batch sizes, and CNN/LSTM parameters.
-- **Advanced Attention Mechanisms**: Experiment with more complex attention mechanisms to improve model accuracy.
-- **Regularization**: Add dropout or weight decay to reduce overfitting and improve generalization.
-
-This model forms a strong foundation for time series classification, and further optimizations may enhance performance.
-
---- 
-
-# Step-by-Step Process 
-
-The following steps describe the process and functionality of the provided code, which builds, trains, and evaluates a **Hybrid CNN-LSTM Attention model** for time series classification.
-
-## 1. **Importing Required Libraries**
-
-```python
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
-import matplotlib.pyplot as plt
-import pandas as pd
-import os
-from model import HybridCNNLSTMAttention
-from data_loader import CustomDataset
+```bash
+python Traindata_geothermal_HybridCNNLSTM_rev10_Fixed.py
 ```
 
-The code begins by importing the necessary libraries:
+This script executes the complete workflow:
+1. Loads and cleans data from all three collector configurations
+2. Combines datasets with proper BHE type encoding
+3. Splits data temporally (training/validation/test)
+4. Trains the CNN-LSTM model with GPU optimization
+5. Evaluates performance on 21-day forecast window
+6. Generates comprehensive visualizations
+7. Saves model checkpoint and results to `output/`
+
+### Additional Analysis Scripts
+
+**Temperature Distribution Analysis:**
+```bash
+python temperature_distribution_plot.py
+```
+
+**Training Convergence Visualization:**
+```bash
+python plot_training_convergence.py
+```
+
+**Architecture Visualization:**
+```bash
+python visualize_architecture.py
+```
+
+**Sensor Recovery Analysis (RT514):**
+```bash
+python sensor_recovery_rt514.py
+```
+
+**Confusion Matrix Generation:**
+```bash
+python confusionMatrix.py
+```
+## Software Implementation
+
+### Development Environment
+- **Python**: 3.10.18
+- **Operating System**: Windows 10 (build 26100)
+- **Deep Learning Framework**: PyTorch 2.0.1+cu117
+- **CUDA**: 11.7 with cuDNN 8.5.0
+
+### Key Dependencies
+```
+torch==2.0.1+cu117
+pandas==2.3.0
+numpy==1.26.4
+scikit-learn==1.7.2
+matplotlib==3.10.6
+```
+
+### Hardware Requirements
+- **GPU**: NVIDIA GPU with CUDA support (recommended for training)
+- **Memory**: 16GB RAM minimum
+- **Storage**: 2GB for data and model checkpoints
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/mobilazy/CNN-LSTM_geo.git
+cd CNN-LSTM_geo
+```
+
+2. Create conda environment:
+```bash
+conda env create -f environment.yml
+conda activate msgeothermal-env
+```
+
+3. Verify installation:
+```bash
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+## Key Features
+
+- **Comprehensive Data Cleaning**: Eight-stage pipeline removes sensor artifacts while preserving thermal dynamics
+- **Multi-Configuration Analysis**: Simultaneous training on three different BHE designs
+- **GPU Optimization**: Mixed precision training with batch size optimization (up to 1024)
+- **Temporal Validation**: Calendar-based splitting preserves temporal coherence
+- **Rich Visualizations**: Automated generation of performance plots and architecture diagrams
+- **Sensor Malfunction Detection**: CNN-LSTM model reconstructs faulty sensor readings
+
+## Project Structure
+
+```
+CNN-LSTM_geo/
+├── input/                          # Raw sensor data CSV files
+│   ├── MeterOE401_singleU45.csv
+│   ├── MeterOE402_Ellipse63.csv
+│   └── MeterOE403_doubleU45.csv
+├── output/                         # Generated results and visualizations
+│   ├── comprehensive_model.pth
+│   ├── comprehensive_results.json
+│   └── *.png
+├── docs/                           # Documentation and analysis reports
+├── archive/                        # Previous model versions
+├── Traindata_geothermal_HybridCNNLSTM_rev10_Fixed.py  # Main training script
+├── sensor_recovery_rt514.py        # Sensor malfunction recovery
+├── plot_training_convergence.py   # Training metrics visualization
+├── visualize_architecture.py      # Model architecture diagram
+└── environment.yml                 # Conda environment specification
+```
+
+## Publications and References
+
+This work is part of ongoing research at the University of Stavanger on geothermal energy systems and machine learning applications for predictive maintenance.
+
+### Related Documentation
+- `docs/Chapter_4_Results.md` - Comprehensive results analysis
+- `docs/Chapter_4_6_Sensor_Malfunction_Recovery.md` - Sensor recovery methodology
+- `docs/Chapter_U-shaped_BHE.md` - U-shaped BHE configuration analysis
+- `docs/Literature_Gap_Section.md` - Research context and literature review
+
+## Future Development
+
+- **Real-time Prediction**: Deploy model for live sensor data streaming
+- **Extended Forecasting**: Multi-step ahead predictions beyond 21 days
+- **Transfer Learning**: Apply trained model to other geothermal installations
+- **Anomaly Detection**: Automated fault detection and alerting system
+- **Optimization**: Recommend optimal operating parameters for efficiency
+
+---
+
+## Contact and Contributions
+
+For questions, issues, or contributions, please open an issue on the GitHub repository or contact the research team at the University of Stavanger.
+
+**Repository**: [https://github.com/mobilazy/CNN-LSTM_geo](https://github.com/mobilazy/CNN-LSTM_geo)
 - `torch`, `torch.nn`, `torch.optim`: For deep learning operations and model training.
 - `matplotlib` and `pandas`: For plotting training/testing metrics and handling data.
 - `os`: For file and folder operations.
