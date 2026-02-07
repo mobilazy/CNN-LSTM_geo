@@ -1,37 +1,35 @@
-# Directories to exclude
-archive/
-docs/
-.github/
+# Exclude everything by default
+*
+*/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+# Then explicitly include what we want
+!.gitignore
+!Traindata_geothermal_HybridCNNLSTM_rev10_final.py
+!CodeExplanation_JupyterNotebook.ipynb
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Include input directory and specific files
+!input/
+!input/MeterOE401_singleU45.csv
+!input/MeterOE402_Ellipse63.csv
+!input/MeterOE403_doubleU45.csv
 
-# Environment
-.env
-.venv
-env/
-venv/
+# Include output directory and specific files
+!output/
+!output/comprehensive_collector_analysis.png
+!output/collector_configuration_performance_analysis.png
+!output/comprehensive_model.pth
+!output/comprehensive_results.json
+!output/comprehensive_analysis.log
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Exclude Python cache and temp files within included directories
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.Python
+**/.ipynb_checkpoints/
 
-# OS
+# Exclude OS files
 .DS_Store
 Thumbs.db
-
-# Model checkpoints (keep output folder but ignore large model files if needed)
-# output/*.pth
-
-# Logs
-*.log
+desktop.ini
