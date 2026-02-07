@@ -6,6 +6,7 @@
 !.gitignore
 !Traindata_geothermal_HybridCNNLSTM_rev10_final.py
 !CodeExplanation_JupyterNotebook.ipynb
+!environment.yml
 
 # Include input directory and specific files
 !input/
