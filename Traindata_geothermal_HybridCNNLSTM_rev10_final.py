@@ -119,7 +119,18 @@ def load_complete_field_data():
     try:
         # Load OE401 (120 wells, contaminated with 8 research wells)
         logging.info("Loading OE401 (contaminated with 8 research wells)...")
-        df401 = pd.read_csv(oe401_path, encoding='utf-8', sep=';', decimal=',')
+        df401 = pd.read_csv(oe401_path, encoding='utf-8', sep=',', decimal='.')
+        
+        # Remove leading/trailing spaces from column names first
+        df401.columns = df401.columns.str.strip()
+        
+        # Rename columns to match expected names
+        df401 = df401.rename(columns={
+            'Power [kW]': 'power_kw',
+            'T_supply [°C]': 'supply_temp',
+            'return [°C]': 'return_temp',
+            'Flow [m³/h]': 'flow_rate'
+        })
         
         # DST handling for OE401
         s = df401["Timestamp"].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
@@ -137,7 +148,18 @@ def load_complete_field_data():
         
         # Load OE402 (MuoviEllipse, 4 wells)
         logging.info("Loading OE402 (MuoviEllipse 63mm, 4 research wells)...")
-        df402 = pd.read_csv(oe402_path, encoding='utf-8', sep=';', decimal=',')
+        df402 = pd.read_csv(oe402_path, encoding='utf-8', sep=',', decimal='.')
+        
+        # Remove leading/trailing spaces from column names first
+        df402.columns = df402.columns.str.strip()
+        
+        # Rename columns to match expected names
+        df402 = df402.rename(columns={
+            'Power [kW]': 'power_kw',
+            'T_supply [°C]': 'supply_temp',
+            'T_return [°C]': 'return_temp',
+            'Flow [m³/h]': 'flow_rate'
+        })
         
         s = df402["Timestamp"].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
         ts_parsed = pd.to_datetime(s, dayfirst=True, errors="coerce")
@@ -158,7 +180,18 @@ def load_complete_field_data():
         
         # Load OE403 (Double U45mm, 4 wells)
         logging.info("Loading OE403 (Double U45mm, 4 research wells)...")
-        df403 = pd.read_csv(oe403_path, encoding='utf-8', sep=';', decimal=',')
+        df403 = pd.read_csv(oe403_path, encoding='utf-8', sep=',', decimal='.')
+        
+        # Remove leading/trailing spaces from column names first
+        df403.columns = df403.columns.str.strip()
+        
+        # Rename columns to match expected names
+        df403 = df403.rename(columns={
+            'Power [kW]': 'power_kw',
+            'T_supply [°C]': 'supply_temp',
+            'T_return [°C]': 'return_temp',
+            'Flow [m³/h]': 'flow_rate'
+        })
         
         s = df403["Timestamp"].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
         ts_parsed = pd.to_datetime(s, dayfirst=True, errors="coerce")
@@ -238,8 +271,19 @@ def load_double_u45mm_research_data():
     logging.info("Loading Double U45mm research wells data...")
     
     try:
-        df = pd.read_csv(oe403_path, encoding='utf-8', sep=';', decimal=',')
+        df = pd.read_csv(oe403_path, encoding='utf-8', sep=',', decimal='.')
         logging.info(f"Raw Double U45mm data loaded: {len(df)} records")
+        
+        # Remove leading/trailing spaces from column names first
+        df.columns = df.columns.str.strip()
+        
+        # Rename columns to match expected names
+        df = df.rename(columns={
+            'Power [kW]': 'power_kw',
+            'T_supply [°C]': 'supply_temp',
+            'T_return [°C]': 'return_temp',
+            'Flow [m³/h]': 'flow_rate'
+        })
         
         # DST handling
         s = df["Timestamp"].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
@@ -294,8 +338,19 @@ def load_muovi_ellipse_research_data():
     logging.info("Loading MuoviEllipse 63mm research data...")
     
     try:
-        df = pd.read_csv(csv_path, encoding='utf-8', sep=';', decimal=',')
+        df = pd.read_csv(csv_path, encoding='utf-8', sep=',', decimal='.')
         logging.info(f"Raw MuoviEllipse data loaded: {len(df)} records")
+        
+        # Remove leading/trailing spaces from column names first
+        df.columns = df.columns.str.strip()
+        
+        # Rename columns to match expected names
+        df = df.rename(columns={
+            'Power [kW]': 'power_kw',
+            'T_supply [°C]': 'supply_temp',
+            'T_return [°C]': 'return_temp',
+            'Flow [m³/h]': 'flow_rate'
+        })
         
         # DST handling
         s = df["Timestamp"].astype(str).str.replace("\u00A0", " ", regex=False).str.strip()
