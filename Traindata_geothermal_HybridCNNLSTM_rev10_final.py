@@ -174,7 +174,7 @@ def load_complete_field_data():
             if col in df402.columns:
                 df402[col] = pd.to_numeric(df402[col], errors='coerce')
         
-        # Normalize OE402 by 4 wells
+        # Divide by 4 wells
         df402['power_kw'] = df402['power_kw'] / 4
         df402['flow_rate'] = df402['flow_rate'] / 4
         
@@ -206,7 +206,7 @@ def load_complete_field_data():
             if col in df403.columns:
                 df403[col] = pd.to_numeric(df403[col], errors='coerce')
         
-        # Normalize OE403 by 4 wells
+        # Divide by 4 wells
         df403['power_kw'] = df403['power_kw'] / 4
         df403['flow_rate'] = df403['flow_rate'] / 4
         
@@ -230,7 +230,7 @@ def load_complete_field_data():
         
         logging.info(f"Research wells total power range: {research_power_total.min():.2f} to {research_power_total.max():.2f} kW")
         
-        # Apply OE401 correction: subtract research wells and normalize by 112
+        # Apply OE401 correction: subtract research wells and divide by 112
         df401_aligned['power_kw'] = (df401_aligned['power_kw'] - research_power_total) / 112
         df401_aligned['flow_rate'] = (df401_aligned['flow_rate'] - research_flow_total) / 112
         
@@ -249,7 +249,6 @@ def load_complete_field_data():
         df = clean_bhe_data(df, "SingleU45mm_OE401_Corrected")
         
         # Calculate thermal metrics
-        df = calculate_thermal_resistance(df)
         df = calculate_cumulative_energy(df, time_interval_minutes=5)
         
         logging.info(f"Loaded complete field data (corrected): {len(df)} records")
@@ -316,7 +315,6 @@ def load_double_u45mm_research_data():
         df = clean_bhe_data(df, "DoubleU45mm_OE403")
         
         # Calculate thermal metrics
-        df = calculate_thermal_resistance(df)
         df = calculate_cumulative_energy(df, time_interval_minutes=5)
         
         logging.info(f"Processed Double U45mm data: {len(df)} records")
@@ -383,7 +381,6 @@ def load_muovi_ellipse_research_data():
         df = clean_bhe_data(df, "MuoviEllipse_OE402")
         
         # Calculate thermal metrics
-        df = calculate_thermal_resistance(df)
         df = calculate_cumulative_energy(df, time_interval_minutes=5)
         
         logging.info(f"Processed MuoviEllipse 63mm data: {len(df)} records")
@@ -447,10 +444,21 @@ def clean_bhe_data(df, dataset_name=""):
             if outliers_removed > 0:
                 logging.info(f"Removed {outliers_removed} flow rate outliers from {col}")
     
-    # 3. Remove duplicate consecutive values (sensor stuck readings) with a higher tolerance
-    for col in temp_cols + power_cols + flow_cols:
+    # 3. Remove duplicate consecutive values (sensor stuck readings)
+    # Higher threshold for temperatures (60 readings = 5 hours) to avoid removing valid data
+    # due to slow thermal dynamics in geothermal systems
+    for col in temp_cols:
         if col in df_clean.columns:
-            # Find consecutive duplicates (same value for >18 consecutive readings)
+            consecutive_same = df_clean[col].groupby((df_clean[col] != df_clean[col].shift()).cumsum()).transform('size')
+            stuck_mask = consecutive_same > 60
+            stuck_removed = stuck_mask.sum()
+            df_clean.loc[stuck_mask, col] = np.nan
+            if stuck_removed > 0:
+                logging.info(f"Removed {stuck_removed} stuck sensor readings from {col}")
+    
+    # Lower threshold for power and flow (18 readings = 90 minutes) as these respond faster
+    for col in power_cols + flow_cols:
+        if col in df_clean.columns:
             consecutive_same = df_clean[col].groupby((df_clean[col] != df_clean[col].shift()).cumsum()).transform('size')
             stuck_mask = consecutive_same > 18
             stuck_removed = stuck_mask.sum()
@@ -528,30 +536,32 @@ def clean_bhe_data(df, dataset_name=""):
     
     return df_clean
 
-def calculate_thermal_resistance(df):
-    """Calculate borehole thermal resistance R_b = ΔT / Q_well [K/W].
+def calculate_collector_efficiency(df):
+    """Calculate collector efficiency = |Q_well| / |ΔT| [kW/°C].
     
-    Lower R_b indicates more efficient heat transfer.
-    Only calculates when power exceeds 10W threshold.
+    Physical meaning: Heat transfer capacity per unit temperature difference.
+    Higher values indicate more efficient heat extraction or rejection.
+    
+    RESERVED FOR FUTURE USE - Not currently called in the code.
     """
     
     if 'supply_temp' not in df.columns or 'return_temp' not in df.columns or 'power_kw' not in df.columns:
-        logging.warning("Missing columns for thermal resistance calculation")
+        logging.warning("Missing columns for collector efficiency calculation")
         return df
     
     delta_T = df['supply_temp'] - df['return_temp']
-    Q_well = df['power_kw'] * 1000  # Convert kW to W
+    Q_well = df['power_kw']  # Already in kW
     
-    R_b = np.where(
-        np.abs(Q_well) > 10,
-        delta_T / Q_well,
+    efficiency = np.where(
+        np.abs(delta_T) > 0.1,  # Threshold in °C
+        np.abs(Q_well) / np.abs(delta_T),
         np.nan
     )
     
-    df['thermal_resistance'] = R_b
+    df['collector_efficiency'] = efficiency
     
-    valid_count = (~np.isnan(R_b)).sum()
-    logging.info(f"Calculated thermal resistance for {valid_count} valid measurements")
+    valid_count = (~np.isnan(efficiency)).sum()
+    logging.info(f"Calculated collector efficiency for {valid_count} valid measurements")
     
     return df
 
