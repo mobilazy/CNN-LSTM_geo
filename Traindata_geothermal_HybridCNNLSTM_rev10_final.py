@@ -1,16 +1,15 @@
-"""CNN-LSTM Model for Geothermal BHE Configuration Analysis - Final Version
+"""CNN-LSTM Model for Geothermal BHE Configuration Analysis
 
-New to this version:
-1. OE401 contamination correction: Subtract 8 research wells (OE402+OE403), normalize by 112 production wells
-2. DST timestamp handling: Timezone-aware parsing with ambiguous=False, nonexistent="shift_forward"
+What's new:
+- OE401 correction: subtract 8 research wells, divide by 112 production wells
+- DST handling: timezone-aware parsing to deal with daylight savings
 
+Three BHE types:
+- 112x Single U45mm (production wells, corrected)
+- 4x Double U45mm (research)
+- 4x MuoviEllipse 63mm (research)
 
-Analyzes three collector configurations:
-- 112x Single U45mm wells (production field, corrected from 120)
-- 4x Double U45mm wells (research)
-- 4x MuoviEllipse 63mm wells (research)
-
-All at 300m depth with per-well normalization.
+All at 300m depth with per-well values.
 """
 
 from typing import List, Dict, Optional
@@ -31,11 +30,11 @@ import json
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configuration
+# Config
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Model hyperparameters
+# Model params
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
@@ -44,16 +43,16 @@ LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
 
-# Time-based evaluation windows (days)
-FORECAST_WINDOW_DAYS = 21  # prediction horizon shown in plots and evaluation
-VALIDATION_WINDOW_DAYS = 7  # hold-out window immediately preceding forecast
-TRAIN_HISTORY_WINDOW_DAYS = 21  # amount of history to display alongside forecast
+# Time windows for evaluation (days)
+FORECAST_WINDOW_DAYS = 21  # how far ahead we predict
+VALIDATION_WINDOW_DAYS = 7  # validation hold-out period
+TRAIN_HISTORY_WINDOW_DAYS = 21  # history to show in plots
 
 FORECAST_WINDOW_HOURS = FORECAST_WINDOW_DAYS * 24
 VALIDATION_WINDOW_HOURS = VALIDATION_WINDOW_DAYS * 24
 TRAIN_HISTORY_WINDOW_HOURS = TRAIN_HISTORY_WINDOW_DAYS * 24
 
-# CNN-LSTM architecture
+# Architecture
 CONV_CHANNELS = [32, 64]
 KERNEL_SIZE = 3
 LSTM_HIDDEN = 64
@@ -61,48 +60,43 @@ LSTM_LAYERS = 2
 DROPOUT = 0.1
 PATIENCE = 16
 
-# Setup logging with both file and console output
+# Setup logging to file and console
 log_file_path = os.path.join(OUTPUT_DIR, "comprehensive_analysis.log")
 
-# Create a custom formatter
 formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 
-# Console handler - always shows output
+# Console handler
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 
-# File handler - saves to log file
+# File handler
 file_handler = logging.FileHandler(log_file_path, mode="w")
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(formatter)
 
-# Configure root logger
 logging.basicConfig(
     level=logging.INFO,
     handlers=[console_handler, file_handler],
-    force=True  # Force reconfiguration if already configured
+    force=True
 )
 
 def load_complete_field_data():
-    """Load and process complete field data with OE401 correction.
+    """Load complete field data with OE401 correction.
     
-    CORRECTION APPLIED:
-    OE401 contains 120 wells total, but 8 of those are research wells
-    separately metered in OE402 (4 wells) and OE403 (4 wells).
+    OE401 measures 120 wells but 8 are research wells also in OE402/OE403.
+    We subtract those 8 and divide by 112 production wells.
     
-    This function:
-    1. Loads all three sensor streams
-    2. Aligns timestamps with DST handling
-    3. Subtracts research wells (OE402 + OE403) from OE401 total
-    4. Normalizes by 112 production wells (not 120)
+    Steps:
+    1. Load all three sensors
+    2. Handle DST timestamps  
+    3. Subtract research wells from OE401
+    4. Divide by 112 wells
     """
     
     INPUT_DIR = os.path.join(os.path.dirname(__file__), "input")
     
-    logging.info("="*80)
-    logging.info("LOADING DATA WITH OE401 CORRECTION")
-    logging.info("="*80)
+    logging.info("Loading data with OE401 correction...")
     
     # Load all three sensors
     oe401_path = os.path.join(INPUT_DIR, "MeterOE401_singleU45.csv")
@@ -117,11 +111,11 @@ def load_complete_field_data():
         raise FileNotFoundError(f"Double U45mm data not found: {oe403_path}")
     
     try:
-        # Load OE401 (120 wells, contaminated with 8 research wells)
-        logging.info("Loading OE401 (contaminated with 8 research wells)...")
+        # Load OE401 (120 wells including 8 research)
+        logging.info("Loading OE401...")
         df401 = pd.read_csv(oe401_path, encoding='utf-8', sep=',', decimal='.')
         
-        # Remove leading/trailing spaces from column names first
+        # Clean up column names
         df401.columns = df401.columns.str.strip()
         
         # Rename columns to match expected names
@@ -147,7 +141,7 @@ def load_complete_field_data():
                 df401[col] = pd.to_numeric(df401[col], errors='coerce')
         
         # Load OE402 (MuoviEllipse, 4 wells)
-        logging.info("Loading OE402 (MuoviEllipse 63mm, 4 research wells)...")
+        logging.info("Loading OE402...")
         df402 = pd.read_csv(oe402_path, encoding='utf-8', sep=',', decimal='.')
         
         # Remove leading/trailing spaces from column names first
@@ -179,7 +173,7 @@ def load_complete_field_data():
         df402['flow_rate'] = df402['flow_rate'] / 4
         
         # Load OE403 (Double U45mm, 4 wells)
-        logging.info("Loading OE403 (Double U45mm, 4 research wells)...")
+        logging.info("Loading OE403...")
         df403 = pd.read_csv(oe403_path, encoding='utf-8', sep=',', decimal='.')
         
         # Remove leading/trailing spaces from column names first
@@ -228,14 +222,13 @@ def load_complete_field_data():
         research_power_total = (df402_aligned['power_kw'] * 4) + (df403_aligned['power_kw'] * 4)
         research_flow_total = (df402_aligned['flow_rate'] * 4) + (df403_aligned['flow_rate'] * 4)
         
-        logging.info(f"Research wells total power range: {research_power_total.min():.2f} to {research_power_total.max():.2f} kW")
+        logging.info(f"Research wells total power: {research_power_total.min():.2f} to {research_power_total.max():.2f} kW")
         
-        # Apply OE401 correction: subtract research wells and divide by 112
+        # Apply correction: subtract research wells and divide by 112
         df401_aligned['power_kw'] = (df401_aligned['power_kw'] - research_power_total) / 112
         df401_aligned['flow_rate'] = (df401_aligned['flow_rate'] - research_flow_total) / 112
         
-        logging.info(f"Corrected OE401 per-well power range: {df401_aligned['power_kw'].min():.3f} to {df401_aligned['power_kw'].max():.3f} kW")
-        logging.info("="*80)
+        logging.info(f"Corrected OE401 per-well power: {df401_aligned['power_kw'].min():.3f} to {df401_aligned['power_kw'].max():.3f} kW")
         
         # Keep essential columns
         essential_cols = ['Timestamp', 'supply_temp', 'return_temp', 'flow_rate', 'power_kw']
@@ -259,7 +252,7 @@ def load_complete_field_data():
         raise
 
 def load_double_u45mm_research_data():
-    """Load and process Double U45mm research wells data from MeterOE403 with DST handling."""
+    """Load Double U45mm research wells from OE403."""
     
     oe403_path = os.path.join(os.path.dirname(__file__), "input/MeterOE403_doubleU45.csv")
     
@@ -325,7 +318,7 @@ def load_double_u45mm_research_data():
         return pd.DataFrame()
 
 def load_muovi_ellipse_research_data():
-    """Load and process MuoviEllipse 63mm research data with DST handling."""
+    """Load MuoviEllipse 63mm research wells from OE402."""
     
     csv_path = os.path.join(os.path.dirname(__file__), "input/MeterOE402_Ellipse63.csv")
     
@@ -365,7 +358,7 @@ def load_muovi_ellipse_research_data():
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Normalize by 4 wells
+        # Divide by 4 wells
         df['power_kw'] = df['power_kw'] / 4
         df['flow_rate'] = df['flow_rate'] / 4
         
@@ -391,13 +384,13 @@ def load_muovi_ellipse_research_data():
         return pd.DataFrame()
 
 def create_muovi_ellipse_research_data():
-    """DEPRECATED: Use load_muovi_ellipse_research_data() instead."""
+    """Deprecated - use load_muovi_ellipse_research_data() instead."""
     
-    logging.warning("create_muovi_ellipse_research_data() is deprecated - use load_muovi_ellipse_research_data()")
+    logging.warning("Deprecated: use load_muovi_ellipse_research_data()")
     return load_muovi_ellipse_research_data()
 
 def clean_bhe_data(df, dataset_name=""):
-    """Data cleaning using signal processing techniques."""
+    """Clean sensor data using signal processing."""
     
     if len(df) == 0:
         return df
@@ -406,20 +399,20 @@ def clean_bhe_data(df, dataset_name=""):
 
     df_clean = df.copy()
     
-    # Define sensor columns
+    # Sensor columns
     temp_cols = ['supply_temp', 'return_temp']
     power_cols = ['power_kw']
     flow_cols = ['flow_rate']
     
-    # 1. Convert to numeric without rounding so we retain sensor fidelity
+    # Convert to numeric (keep sensor precision)
     for col in temp_cols + power_cols + flow_cols:
         if col in df_clean.columns:
             df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
     
-    # 2. Remove physically unrealistic values
+    # Remove physically unrealistic values
     for col in temp_cols:
         if col in df_clean.columns:
-            # Temperature should be reasonable for geothermal systems (-10°C to 50°C)
+            # Temp range for geothermal: -10 to 50°C
             mask = (df_clean[col] >= -10) & (df_clean[col] <= 50)
             outliers_removed = (~mask).sum()
             df_clean.loc[~mask, col] = np.nan
@@ -428,7 +421,7 @@ def clean_bhe_data(df, dataset_name=""):
     
     for col in power_cols:
         if col in df_clean.columns:
-            # Power should be reasonable (-500kW to 500kW for research boreholes)
+            # Power range for boreholes: -500 to 500kW
             mask = (df_clean[col] >= -500) & (df_clean[col] <= 500)
             outliers_removed = (~mask).sum()
             df_clean.loc[~mask, col] = np.nan
@@ -437,16 +430,15 @@ def clean_bhe_data(df, dataset_name=""):
     
     for col in flow_cols:
         if col in df_clean.columns:
-            # Flow rate should be positive and reasonable
+            # Flow should be positive and under 100 m³/h
             mask = (df_clean[col] > 0) & (df_clean[col] <= 100)
             outliers_removed = (~mask).sum()
             df_clean.loc[~mask, col] = np.nan
             if outliers_removed > 0:
                 logging.info(f"Removed {outliers_removed} flow rate outliers from {col}")
     
-    # 3. Remove duplicate consecutive values (sensor stuck readings)
-    # Higher threshold for temperatures (60 readings = 5 hours) to avoid removing valid data
-    # due to slow thermal dynamics in geothermal systems
+    # Remove stuck sensor readings
+    # Higher threshold for temps (60 = 5hrs) due to slow thermal dynamics
     for col in temp_cols:
         if col in df_clean.columns:
             consecutive_same = df_clean[col].groupby((df_clean[col] != df_clean[col].shift()).cumsum()).transform('size')
@@ -456,7 +448,7 @@ def clean_bhe_data(df, dataset_name=""):
             if stuck_removed > 0:
                 logging.info(f"Removed {stuck_removed} stuck sensor readings from {col}")
     
-    # Lower threshold for power and flow (18 readings = 90 minutes) as these respond faster
+    # Lower threshold for power/flow (18 = 90min) - faster response
     for col in power_cols + flow_cols:
         if col in df_clean.columns:
             consecutive_same = df_clean[col].groupby((df_clean[col] != df_clean[col].shift()).cumsum()).transform('size')
@@ -466,9 +458,9 @@ def clean_bhe_data(df, dataset_name=""):
             if stuck_removed > 0:
                 logging.info(f"Removed {stuck_removed} stuck sensor readings from {col}")
     
-    # 4. Apply light median filtering to reduce sensor noise without over-smoothing
-    window_temp = 3  # 15-minute window for temperatures
-    window_other = 5  # Slightly wider for power/flow to keep signals stable
+    # Apply median filtering to reduce noise
+    window_temp = 3  # 15min for temps
+    window_other = 5  # 25min for power/flow
     for col in temp_cols:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].rolling(window=window_temp, center=True, min_periods=1).median()
@@ -479,7 +471,7 @@ def clean_bhe_data(df, dataset_name=""):
 
     logging.info(f"Applied median filtering (temps={window_temp}, other={window_other})")
 
-    # 5. Interpolate short gaps (up to 20 minutes = 4 readings)
+    # Interpolate short gaps (up to 20min)
     max_gap = 4
     for col in temp_cols + power_cols + flow_cols:
         if col in df_clean.columns:
@@ -487,13 +479,13 @@ def clean_bhe_data(df, dataset_name=""):
     
     logging.info(f"Interpolated gaps up to {max_gap} readings")
     
-    # 6. Physics validation - temperature differences should make sense
+    # Physics check - temp diff should match power direction
     if all(col in df_clean.columns for col in ['supply_temp', 'return_temp', 'power_kw']):
         temp_diff = df_clean['return_temp'] - df_clean['supply_temp']
         power = df_clean['power_kw']
         
-        # For heat extraction (negative power), return should be cooler (negative temp diff)
-        # For heat rejection (positive power), return should be warmer (positive temp diff)
+        # Heat extraction (neg power) -> cooler return (neg diff)
+        # Heat rejection (pos power) -> warmer return (pos diff)
         extraction_mask = power < 0
         rejection_mask = power > 0
         
@@ -506,15 +498,15 @@ def clean_bhe_data(df, dataset_name=""):
             df_clean.loc[inconsistent_extraction | inconsistent_rejection, ['supply_temp', 'return_temp']] = np.nan
             logging.info(f"Removed {inconsistent_total} physically inconsistent temperature readings")
     
-    # 7. Remove rows with too many missing values
+    # Remove rows with too many missing values
     essential_cols = temp_cols + power_cols + flow_cols
     available_cols = [col for col in essential_cols if col in df_clean.columns]
     
-    # Adaptive missing threshold based on data source
+    # Adaptive threshold
     if dataset_name == 'complete_field':
-        missing_threshold = 0.8  # More lenient for complete field data
+        missing_threshold = 0.8  # more lenient for production field
     else:
-        missing_threshold = 0.5  # Standard threshold for research wells
+        missing_threshold = 0.5  # standard for research wells
     
     if available_cols:
         missing_ratio = df_clean[available_cols].isnull().sum(axis=1) / len(available_cols)
@@ -524,7 +516,7 @@ def clean_bhe_data(df, dataset_name=""):
         if rows_removed > 0:
             logging.info(f"Removed {rows_removed} rows with >{missing_threshold*100}% missing data")
     
-    # 8. Final quality check - remove remaining NaN rows
+    # Final cleanup - drop remaining NaN rows
     initial_len = len(df_clean)
     df_clean = df_clean.dropna(subset=available_cols).copy()
     final_removed = initial_len - len(df_clean)
@@ -539,10 +531,9 @@ def clean_bhe_data(df, dataset_name=""):
 def calculate_collector_efficiency(df):
     """Calculate collector efficiency = |Q_well| / |ΔT| [kW/°C].
     
-    Physical meaning: Heat transfer capacity per unit temperature difference.
-    Higher values indicate more efficient heat extraction or rejection.
+    Higher = more efficient heat transfer.
     
-    RESERVED FOR FUTURE USE - Not currently called in the code.
+    Note: Not currently used in the code.
     """
     
     if 'supply_temp' not in df.columns or 'return_temp' not in df.columns or 'power_kw' not in df.columns:
@@ -566,9 +557,9 @@ def calculate_collector_efficiency(df):
     return df
 
 def calculate_cumulative_energy(df, time_interval_minutes=5):
-    """Calculate cumulative thermal energy using trapezoidal integration.
+    """Calculate cumulative energy using trapezoidal integration.
     
-    Uses formula: E ≈ Σ[(Q_i + Q_{i+1})/2] * Δt
+    E ≈ Σ[(Q_i + Q_{i+1})/2] * Δt
     """
     
     if 'power_kw' not in df.columns:
@@ -594,7 +585,7 @@ def calculate_cumulative_energy(df, time_interval_minutes=5):
     return df
 
 class BHEDataset(Dataset):
-    """Simple dataset for collector-specific training."""
+    """Dataset for collector-specific training."""
     
     def __init__(self, features, targets):
         self.features = torch.FloatTensor(features)
@@ -607,7 +598,7 @@ class BHEDataset(Dataset):
         return self.features[idx], self.targets[idx]
 
 class SimpleNeuralNetwork(nn.Module):
-    """Simple feedforward network for collector-specific training."""
+    """Feedforward network for collector training."""
     
     def __init__(self, input_features, hidden_size=128, dropout=0.3):
         super().__init__()
@@ -628,7 +619,7 @@ class SimpleNeuralNetwork(nn.Module):
         return self.network(x).squeeze()
 
 class ComprehensiveDataset(Dataset):
-    """Dataset class for comprehensive BHE analysis."""
+    """Dataset for comprehensive BHE analysis."""
     
     def __init__(self, df, seq_len, horizon, feature_cols, target_col, mean=None, std=None):
         self.seq_len = seq_len
@@ -671,7 +662,7 @@ class ComprehensiveDataset(Dataset):
         return torch.FloatTensor(self.sequences[idx]), torch.FloatTensor([self.labels[idx]])
 
 class ComprehensiveCNNLSTM(nn.Module):
-    """Comprehensive CNN-LSTM model for BHE analysis."""
+    """CNN-LSTM model for BHE analysis."""
     
     def __init__(self, input_features, conv_channels, kernel_size, lstm_hidden, lstm_layers, dropout):
         super(ComprehensiveCNNLSTM, self).__init__()
@@ -756,7 +747,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
         optimizer, mode='min', factor=0.5, patience=patience, verbose=True
     )
     
-    # Enable mixed precision for better GPU utilization if using CUDA
+    # Use mixed precision if on GPU
     scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
     
     best_val_loss = float('inf')
@@ -766,11 +757,11 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
     train_losses = []
     val_losses = []
     
-    # Monitor GPU memory if CUDA is available
+    # GPU info if available
     if device == 'cuda':
         logging.info(f"GPU: {torch.cuda.get_device_name(0)}")
         logging.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-        torch.cuda.empty_cache()  # Clear cache before training
+        torch.cuda.empty_cache()
     
     logging.info(f"Starting training for {epochs} epochs...")
     
@@ -780,7 +771,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
         train_loss = 0.0
         train_batches = 0
         
-        # Monitor GPU memory at start of epoch
+        # Check GPU memory on first epoch
         if device == 'cuda' and epoch == 1:
             allocated_before = torch.cuda.memory_allocated() / 1024**3
             logging.info(f"GPU memory allocated before training: {allocated_before:.2f} GB")
@@ -792,7 +783,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
             
             optimizer.zero_grad()
             
-            if scaler is not None:  # Mixed precision training
+            if scaler is not None:  # mixed precision
                 with torch.cuda.amp.autocast():
                     outputs = model(batch_data)
                     loss = criterion(outputs, batch_targets)
@@ -812,7 +803,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
         avg_train_loss = train_loss / train_batches
         train_losses.append(avg_train_loss)
         
-        # Validation phase
+        # Validation
         model.eval()
         val_loss = 0.0
         val_batches = 0
@@ -836,7 +827,7 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
         avg_val_loss = val_loss / val_batches
         val_losses.append(avg_val_loss)
         
-        # Learning rate scheduling
+        # Adjust learning rate
         scheduler.step(avg_val_loss)
         
         # Early stopping
@@ -862,11 +853,11 @@ def train_model(model, train_loader, val_loader, epochs, lr, device, patience):
             logging.info(f"Early stopping triggered at epoch {epoch}")
             break
     
-    # Load best model
+    # Load best model weights
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
     
-    # Final GPU memory report
+    # GPU memory summary
     if device == 'cuda':
         final_allocated = torch.cuda.memory_allocated() / 1024**3
         max_allocated = torch.cuda.max_memory_allocated() / 1024**3
@@ -888,11 +879,11 @@ def evaluate_model(model, data_loader, device):
             
             outputs = model(batch_data)
             
-            # Keep everything on GPU and convert to CPU only at the end
+            # Keep on GPU, convert at the end
             all_predictions.append(outputs.cpu())
             all_targets.append(batch_targets.cpu())
     
-    # Concatenate all tensors first, then convert to numpy once
+    # Concatenate then convert to numpy
     predictions = torch.cat(all_predictions, dim=0).numpy().flatten()
     targets = torch.cat(all_targets, dim=0).numpy().flatten()
     
@@ -911,11 +902,9 @@ def create_comprehensive_collector_analysis(
     train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
     forecast_hours=FORECAST_WINDOW_HOURS
 ):
-    """Generate per-collector plots blending training history and forecast horizon."""
+    """Generate per-collector plots with training history and forecast."""
 
-    logging.info(
-        "Creating comprehensive collector configuration analysis with training/forecast split..."
-    )
+    logging.info("Creating collector analysis with train/forecast split...")
 
     if 'Timestamp' not in test_df.columns:
         logging.warning("Timestamp column missing in test data; cannot build timeline plot")
@@ -939,11 +928,7 @@ def create_comprehensive_collector_analysis(
 
     prediction_start = valid_data['Timestamp'].min()
     prediction_end = valid_data['Timestamp'].max()
-    logging.info(
-        "Forecast evaluation span detected from %s to %s",
-        prediction_start,
-        prediction_end
-    )
+    logging.info("Forecast span: %s to %s", prediction_start, prediction_end)
 
     colors = {
         'single_u45mm': '#2E86AB',
@@ -1328,9 +1313,9 @@ def create_collector_performance_analysis(all_data_clean):
         color = colors.get(bhe_type, '#333333')
         label = labels.get(bhe_type, bhe_type)
         
-        # Calculate thermal efficiency: temperature change per unit flow
+        # Thermal efficiency: temp change per unit flow
         efficiency = np.abs(data['temp_diff_smooth']) / (data['flow_smooth'] + 1e-6)
-        efficiency = efficiency[efficiency < np.percentile(efficiency, 95)]  # Remove outliers
+        efficiency = efficiency[efficiency < np.percentile(efficiency, 95)]  # drop outliers
         flow_data = data['flow_smooth'][:len(efficiency)]
         
         ax4.scatter(flow_data, efficiency, alpha=0.6, s=3, color=color, label=label)
@@ -1340,12 +1325,12 @@ def create_collector_performance_analysis(all_data_clean):
     ax4.set_title('Flow Rate vs Thermal Efficiency', fontsize=14, fontweight='bold')
     ax4.legend(fontsize=9)
     ax4.grid(True, alpha=0.3)
-    ax4.set_ylim(0, 5)  # Focus on realistic efficiency range
+    ax4.set_ylim(0, 5)  # realistic efficiency range
     
-    # Plot 5: Relative Performance Benefits
+    # Plot 5: Relative Performance
     ax5 = fig.add_subplot(gs[1, 2])
     
-    # Calculate relative benefits against baseline (worst performer)
+    # Calculate benefits vs worst performer
     if len(thermal_performance) > 1:
         baseline = max(thermal_performance)  # Highest temp difference = worst performance
         benefits = [(baseline - perf) for perf in thermal_performance]
@@ -1379,10 +1364,8 @@ def create_collector_performance_analysis(all_data_clean):
     
     logging.info(f"Collector performance analysis saved to: {plot_path}")
     
-    # Print summary statistics
-    print("\n" + "="*80)
-    print("COLLECTOR CONFIGURATION PERFORMANCE ANALYSIS")
-    print("="*80)
+    # Summary stats
+    print("\nCOLLECTOR CONFIGURATION PERFORMANCE ANALYSIS")
     
     for i, (bhe_type, data) in enumerate(performance_data.items()):
         label = labels.get(bhe_type, bhe_type)
@@ -1396,21 +1379,18 @@ def create_collector_performance_analysis(all_data_clean):
         print(f"  Avg power per well: {data['power_smooth'].mean():.2f} kW")
         print(f"  Avg flow per well: {data['flow_smooth'].mean():.3f} m³/h")
     
-    print("="*80)
-    
     return plot_path
 
 def create_model_performance_comparison(test_df, predictions, targets, config_analysis):
-    """Create MAE/RMSE comparison plots for different collector configurations."""
+    """Create MAE/RMSE comparison plots by collector type."""
     
     logging.info("Creating model performance comparison by collector type...")
     logging.info(f"Input data: test_df shape={test_df.shape}, predictions length={len(predictions)}, targets length={len(targets)}")
     
-    # Use the same approach as comprehensive_collector_analysis
     # Prepare test data with predictions
     test_data = test_df.copy()
     
-    # Add predictions with proper alignment
+    # Align predictions
     if len(predictions) < len(test_data):
         logging.info(f"Padding predictions: {len(predictions)} -> {len(test_data)}")
         padded_predictions = np.full(len(test_data), np.nan)
@@ -1421,11 +1401,11 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
     
     test_data['actual_temp'] = test_data['return_temp']
     
-    # Filter for valid data
+    # Get valid rows
     valid_data = test_data.dropna(subset=['predicted_temp'])
     logging.info(f"Valid data after filtering: {len(valid_data)} rows")
     
-    # Calculate metrics per collector type (same logic as comprehensive analysis)
+    # Calculate metrics per collector
     collector_metrics = {}
     
     for bhe_type in valid_data['bhe_type'].unique():
@@ -1446,10 +1426,10 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
             }
             logging.info(f"{bhe_type}: MAE={mae:.4f}, RMSE={rmse:.4f}, count={len(pred_vals)}")
     
-    # Check if we have any data to plot
+    # Check if we have data
     if not collector_metrics:
         logging.error("No collector metrics calculated - no data to plot!")
-        # Create empty plot with error message
+        # Show error message on plot
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
         ax1.text(0.5, 0.5, 'No data available\nfor MAE comparison\n\nCheck data alignment\nbetween predictions and test data', 
                 ha='center', va='center', transform=ax1.transAxes, fontsize=12)
@@ -1533,10 +1513,8 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
     
     logging.info(f"Model performance comparison saved to: {plot_path}")
     
-    # Print detailed comparison
-    print("\n" + "="*70)
-    print("MODEL PERFORMANCE COMPARISON BY COLLECTOR TYPE")
-    print("="*70)
+    # Print comparison
+    print("\nMODEL PERFORMANCE BY COLLECTOR TYPE")
     
     for bhe_type in types:
         metrics = collector_metrics[bhe_type]
@@ -1546,12 +1524,10 @@ def create_model_performance_comparison(test_df, predictions, targets, config_an
         print(f"  MAE: {metrics['mae']:.4f}°C")
         print(f"  RMSE: {metrics['rmse']:.4f}°C")
     
-    print("="*70)
-    
     return plot_path, collector_metrics
 
 def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse):
-    """Create standalone collector configuration analysis using raw data."""
+    """Create collector analysis using raw data before modeling."""
     
     logging.info("Creating raw data collector configuration analysis...")
     
@@ -1712,10 +1688,10 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     # Main analysis figure with 2x2 layout
     fig2, axes = plt.subplots(2, 2, figsize=(16, 12))
     
-    # Flow rate comparison (normalized per well)
+    # Flow rate comparison (per well)
     ax2 = axes[0, 0]
     
-    # Normalize complete field flow rate by number of wells (120)
+    # Complete field flow per well (120 total)
     complete_field_normalized_flow = complete_field['flow_rate'] / 120
     
     ax2.hist(complete_field_normalized_flow, bins=50, alpha=0.6, 
@@ -1730,7 +1706,7 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     
     ax2.set_xlabel('Flow Rate (m³/h per well)', fontweight='bold')
     ax2.set_ylabel('Probability Density', fontweight='bold')
-    ax2.set_title('Flow Rate Distribution (Normalized)', fontweight='bold')
+    ax2.set_title('Flow Rate Distribution (Per Well)', fontweight='bold')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     
@@ -1842,7 +1818,7 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     print("COMPREHENSIVE BHE COLLECTOR ANALYSIS (RAW DATA)")
     print("="*80)
     
-    print(f"\n1. FLOW RATE ANALYSIS (Normalized per well):")
+    print(f"\n1. FLOW RATE ANALYSIS (Per well):")
     print(f"   Single U45mm:      {complete_field_normalized_flow.mean():.2f} ± {complete_field_normalized_flow.std():.2f} m³/h")
     print(f"   Double U45mm:      {double_u45['flow_rate'].mean():.2f} ± {double_u45['flow_rate'].std():.2f} m³/h")
     print(f"   MuoviEllipse 63mm: {muovi_ellipse['flow_rate'].mean():.2f} ± {muovi_ellipse['flow_rate'].std():.2f} m³/h")
@@ -2304,7 +2280,6 @@ def main():
     print(f"  - comprehensive_collector_analysis.png (multi-panel visualization)")
     print(f"  - collector_configuration_performance.png (focused collector comparison)")
     print(f"  - comprehensive_analysis.log (execution log)")
-    print("="*70)
     
     # Define features and target
     feature_cols = ['supply_temp', 'flow_rate', 'power_kw', 'bhe_type_encoded']
@@ -2385,7 +2360,7 @@ def main():
         dropout=DROPOUT
     ).to(device)
     
-    # Test GPU utilization before training
+    # Test GPU before training
     if device == 'cuda':
         print("Testing GPU utilization...")
         peak_memory, utilization = test_gpu_utilization(model, train_loader, device)
@@ -2462,10 +2437,8 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
     
-    # Print summary
-    print("\n" + "="*70)
-    print("COMPREHENSIVE CNN-LSTM ANALYSIS SUMMARY")
-    print("="*70)
+    # Summary
+    print("\nCNN-LSTM ANALYSIS SUMMARY")
     print(f"Overall Model Performance:")
     print(f"  MAE: {mae:.4f}°C")
     print(f"  RMSE: {rmse:.4f}°C")
@@ -2495,7 +2468,6 @@ def main():
     print(f"  - model_performance_comparison.png (MAE/RMSE by collector type)")
     print(f"  - raw_data_collector_analysis.png (pre-model data analysis)")
     print(f"  - comprehensive_analysis.log (execution log)")
-    print("="*70)
 
 if __name__ == "__main__":
     main()
