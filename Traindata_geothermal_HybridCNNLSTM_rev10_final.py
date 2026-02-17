@@ -14,6 +14,7 @@ All at 300m depth with per-well values.
 
 from typing import List, Dict, Optional
 import os
+import argparse
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -38,7 +39,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 SEQ_LEN = 48
 PRED_HORIZON = 1
 BATCH_SIZE = 1024  # Maximum GPU utilization - can handle 1024 with only 0.7% VRAM usage
-EPOCHS = 50
+EPOCHS = 100
 LR = 1e-3
 VAL_SPLIT = 0.15
 TEST_SPLIT = 0.25
@@ -70,14 +71,19 @@ console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 
-# File handler
-file_handler = logging.FileHandler(log_file_path, mode="w")
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(formatter)
+# File handler with error handling for locked files
+handlers = [console_handler]
+try:
+    file_handler = logging.FileHandler(log_file_path, mode="w", encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    handlers.append(file_handler)
+except (OSError, PermissionError) as e:
+    print(f"Warning: Could not create log file ({e}). Logging to console only.")
 
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[console_handler, file_handler],
+    handlers=handlers,
     force=True
 )
 
@@ -627,6 +633,9 @@ class ComprehensiveDataset(Dataset):
         self.feature_cols = feature_cols
         self.target_col = target_col
         
+        # Store bhe_type info for tracking sequences per configuration
+        self.bhe_types = df['bhe_type'].values if 'bhe_type' in df.columns else None
+        
         # Prepare data
         self.data = df[feature_cols].values.astype(np.float32)
         self.targets = df[target_col].values.astype(np.float32)
@@ -642,16 +651,20 @@ class ComprehensiveDataset(Dataset):
         # Standardize features
         self.data = (self.data - self.mean) / self.std
         
-        # Create sequences
+        # Create sequences and track corresponding BHE types
         self.sequences = []
         self.labels = []
+        self.sequence_bhe_types = []
         
         for i in range(len(self.data) - seq_len - horizon + 1):
             self.sequences.append(self.data[i:i+seq_len])
             self.labels.append(self.targets[i+seq_len+horizon-1])
+            if self.bhe_types is not None:
+                self.sequence_bhe_types.append(self.bhe_types[i+seq_len+horizon-1])
         
         self.sequences = np.array(self.sequences)
         self.labels = np.array(self.labels)
+        self.sequence_bhe_types = np.array(self.sequence_bhe_types) if self.sequence_bhe_types else None
         
         logging.info(f"Created dataset with {len(self.sequences)} sequences")
     
@@ -899,6 +912,7 @@ def create_comprehensive_collector_analysis(
     targets,
     feature_cols,
     config_analysis,
+    train_seq_counts=None,
     train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
     forecast_hours=FORECAST_WINDOW_HOURS
 ):
@@ -1007,7 +1021,7 @@ def create_comprehensive_collector_analysis(
             'mae': mae,
             'rmse': rmse,
             'count': int(metric_mask.sum()),
-            'train_samples': int(len(base_train))
+            'train_samples': train_seq_counts.get(bhe_type, 0) if train_seq_counts else int(len(base_train))
         }
 
     if not collector_segments:
@@ -1759,31 +1773,37 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     # BHE configurations
     collectors = ['Single U45mm', 'Double U45mm', 'MuoviEllipse 63mm']
     
-    # Pipe specifications (outer diameter accounting for wall thickness)
-    # U45: 45mm nominal + 2×2.6mm wall = 50.2mm outer diameter
-    # MuoviEllipse: elliptical cross-section 51mm × 73mm (from technical drawing)
-    borehole_diameter = 140  # mm (actual borehole)
+    # Borehole diameters (specific to each configuration)
+    borehole_diameters = [114, 140, 140]  # mm: Single U45 uses 114mm, Double U and ME use 140mm
     
-    # Heat transfer surface area per meter depth
-    u45_outer_diameter = 50.2  # mm (45mm + 2×2.6mm wall)
+    # Pipe specifications (PE-SDR11 pipes)
+    # U45: 45mm outer diameter, 4.1mm wall thickness (SDR-11), 36.8mm inner diameter
+    # MuoviEllipse: 44mm × 62mm elliptical cross-section outer dimensions
+    u45_outer_diameter = 45.0  # mm (nominal outer diameter)
+    u45_inner_diameter = 36.8  # mm (45 - 2×4.1)
+    muovi_major_axis = 62.0    # mm (outer)
+    muovi_minor_axis = 44.0    # mm (outer)
+    
+    # Heat transfer surface area per meter depth (perimeter × length)
     surface_areas_per_m = [
-        2 * np.pi * u45_outer_diameter * 1000,      # Single U45mm: 2 legs
-        4 * np.pi * u45_outer_diameter * 1000,      # Double U45mm: 4 legs (2 U-tubes)
-        np.pi * np.sqrt(51 * 73) * 1000             # MuoviEllipse: approximate with equivalent circle
+        2 * np.pi * u45_outer_diameter * 1000,                          # Single U45: 2 legs
+        4 * np.pi * u45_outer_diameter * 1000,                          # Double U45: 4 legs
+        2 * np.pi * np.sqrt((muovi_major_axis**2 + muovi_minor_axis**2) / 2) * 1000  # ME: 2 elliptical pipes
     ]
     
-    # Pipe cross-sectional area (flow area occupied in borehole)
+    # Pipe cross-sectional area (occupied in borehole)
     pipe_cross_sections = [
-        2 * np.pi * (u45_outer_diameter/2)**2,      # Single U45mm: 2 pipes
-        4 * np.pi * (u45_outer_diameter/2)**2,      # Double U45mm: 4 pipes
-        np.pi * (51/2) * (73/2)                     # MuoviEllipse: ellipse area
+        2 * np.pi * (u45_outer_diameter/2)**2,                          # Single U45: 2 circular pipes
+        4 * np.pi * (u45_outer_diameter/2)**2,                          # Double U45: 4 circular pipes
+        2 * np.pi * (muovi_major_axis/2) * (muovi_minor_axis/2)        # ME: 2 elliptical pipes
     ]
     
-    borehole_cross_section = np.pi * (borehole_diameter/2)**2
+    # Borehole cross-sections (configuration-specific)
+    borehole_cross_sections = [np.pi * (d/2)**2 for d in borehole_diameters]
     
-    # Grout volume ratio (thermal coupling efficiency indicator)
-    grout_ratios = [(borehole_cross_section - pipe_area) / borehole_cross_section 
-                    for pipe_area in pipe_cross_sections]
+    # Groundwater fill ratio (thermal coupling through surrounding medium)
+    groundwater_ratios = [(borehole_cross_sections[i] - pipe_cross_sections[i]) / borehole_cross_sections[i] 
+                          for i in range(len(collectors))]
     
     # Average temperature differences
     avg_temp_diffs = [
@@ -1795,11 +1815,11 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     colors = ['#2E86AB', '#A23B72', '#F18F01']
     bars = ax5.bar(collectors, avg_temp_diffs, color=colors, alpha=0.7)
     
-    # Add flow area ratio as text
-    for i, (bar, ratio) in enumerate(zip(bars, flow_ratios)):
+    # Add groundwater fill ratio as text
+    for i, (bar, ratio) in enumerate(zip(bars, groundwater_ratios)):
         height = bar.get_height()
         ax5.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                f'Flow Ratio: {ratio:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+                f'Groundwater: {ratio:.1%}', ha='center', va='bottom', fontsize=8, fontweight='bold')
     
     ax5.set_ylabel('Average |Temperature Difference| (°C)', fontweight='bold')
     ax5.set_title('BHE Performance vs Cross-Sectional Configuration', fontweight='bold')
@@ -1829,14 +1849,16 @@ def create_raw_data_collector_analysis(complete_field, double_u45, muovi_ellipse
     print(f"   MuoviEllipse 63mm: {muovi_temp_diff.mean():.3f} ± {muovi_temp_diff.std():.3f} °C")
     
     print(f"\n3. BHE GEOMETRY AND THERMAL PERFORMANCE:")
-    print(f"   Borehole diameter: {borehole_diameter} mm")
-    print(f"   U45 pipe outer diameter: {u45_outer_diameter} mm (45mm + 2×2.6mm wall)\n")
+    print(f"   U45 pipe: {u45_outer_diameter} mm outer diameter, {u45_inner_diameter} mm inner diameter")
+    print(f"   MuoviEllipse: {muovi_major_axis} mm × {muovi_minor_axis} mm elliptical cross-section\n")
     
     for i, collector in enumerate(collectors):
         print(f"   {collector}:")
+        print(f"      Borehole diameter: {borehole_diameters[i]} mm")
         print(f"      Heat transfer surface: {surface_areas_per_m[i]:,.0f} mm²/m")
         print(f"      Pipe cross-section: {pipe_cross_sections[i]:,.0f} mm²")
-        print(f"      Grout fill ratio: {grout_ratios[i]:.1%}")
+        print(f"      Borehole cross-section: {borehole_cross_sections[i]:,.0f} mm²")
+        print(f"      Groundwater fill ratio: {groundwater_ratios[i]:.1%}")
         print(f"      Avg |ΔT|: {avg_temp_diffs[i]:.3f} °C")
     
     print(f"\n4. OPERATIONAL MODES:")
@@ -2038,12 +2060,31 @@ def analyze_bhe_configurations(combined_data):
     
     return analysis
 
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="CNN-LSTM Model for Geothermal BHE Configuration Analysis"
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Load existing model and regenerate visualizations without training"
+    )
+    return parser.parse_args()
+
+
 def main():
     """Main execution function."""
+    args = parse_args()
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Starting comprehensive CNN-LSTM analysis on device: {device}")
-    logging.info(f"Starting comprehensive analysis with OE401 correction and DST handling on device: {device}")
+    
+    if args.visualize:
+        print(f"Visualization mode: Loading existing model on device: {device}")
+        logging.info(f"Visualization mode: Skipping training, loading existing model")
+    else:
+        print(f"Starting comprehensive CNN-LSTM analysis on device: {device}")
+        logging.info(f"Starting comprehensive analysis with OE401 correction and DST handling on device: {device}")
     
     # Load all data sources with corrections
     print("Loading data with OE401 correction and DST handling...")
@@ -2161,6 +2202,15 @@ def main():
     test_dataset = ComprehensiveDataset(test_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col,
                                       train_dataset.mean, train_dataset.std)
     
+    # Calculate training sequence counts per BHE configuration
+    train_seq_counts = {}
+    if train_dataset.sequence_bhe_types is not None:
+        unique_types, counts = np.unique(train_dataset.sequence_bhe_types, return_counts=True)
+        train_seq_counts = dict(zip(unique_types, counts))
+        logging.info("Training sequences per configuration:")
+        for bhe_type, count in train_seq_counts.items():
+            logging.info(f"  {bhe_type}: {count:,} sequences")
+    
     # Initialize model for batch size optimization
     temp_model = ComprehensiveCNNLSTM(
         input_features=len(feature_cols),
@@ -2238,49 +2288,11 @@ def main():
         targets,
         feature_cols,
         config_analysis,
+        train_seq_counts=train_seq_counts,
         train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
         forecast_hours=FORECAST_WINDOW_HOURS)
     
-    # Save results
-    results = {
-        'model_performance': {
-            'mae': float(mae),
-            'rmse': float(rmse),
-            'training_history': training_history
-        },
-        'config_analysis': config_analysis,
-        'feature_columns': feature_cols,
-        'model_path': model_path,
-        'plot_path': comprehensive_plot_path
-    }
-    
-    results_path = os.path.join(OUTPUT_DIR, 'comprehensive_results.json')
-    with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
-    
-    # Final summary
-    print("\n" + "="*70)
-    print("COMPREHENSIVE CNN-LSTM ANALYSIS SUMMARY")
-    print("="*70)
-    print(f"Model Performance:")
-    print(f"  MAE: {mae:.4f}°C")
-    print(f"  RMSE: {rmse:.4f}°C")
-    print(f"  Parameters: {trainable_params:,}")
-    
-    print(f"\nBHE Configurations Analyzed:")
-    for config, analysis in config_analysis.items():
-        print(f"  {config}:")
-        print(f"    Records: {analysis['count']}")
-        print(f"    Mean return temp: {analysis['avg_return_temp']:.2f}°C")
-        print(f"    Mean temp difference: {analysis['avg_temp_diff']:.3f}°C")
-    
-    print(f"\nFiles generated in {OUTPUT_DIR}:")
-    print(f"  - comprehensive_model.pth (trained CNN-LSTM model)")
-    print(f"  - comprehensive_results.json (detailed results)")
-    print(f"  - comprehensive_collector_analysis.png (multi-panel visualization)")
-    print(f"  - collector_configuration_performance.png (focused collector comparison)")
-    print(f"  - comprehensive_analysis.log (execution log)")
-    
+    # Continue to second training run for comprehensive analysis
     # Define features and target
     feature_cols = ['supply_temp', 'flow_rate', 'power_kw', 'bhe_type_encoded']
     target_col = 'return_temp'
@@ -2321,6 +2333,15 @@ def main():
                                      train_dataset.mean, train_dataset.std)
     test_dataset = ComprehensiveDataset(test_df, SEQ_LEN, PRED_HORIZON, feature_cols, target_col,
                                       train_dataset.mean, train_dataset.std)
+    
+    # Calculate training sequence counts per BHE configuration  
+    train_seq_counts = {}
+    if train_dataset.sequence_bhe_types is not None:
+        unique_types, counts = np.unique(train_dataset.sequence_bhe_types, return_counts=True)
+        train_seq_counts = dict(zip(unique_types, counts))
+        logging.info("Training sequences per configuration:")
+        for bhe_type, count in train_seq_counts.items():
+            logging.info(f"  {bhe_type}: {count:,} sequences")
     
     # Initialize model for batch size optimization
     temp_model = ComprehensiveCNNLSTM(
@@ -2373,15 +2394,31 @@ def main():
     logging.info(f"Model initialized with {total_params:,} parameters ({trainable_params:,} trainable)")
     logging.info(f"Features used: {feature_cols}")
     
-    # Train model
-    print("Starting model training...")
-    logging.info("Starting model training...")
-    model, history = train_model(model, train_loader, val_loader, EPOCHS, LR, device, PATIENCE)
-    
-    # Save model
+    # Train or load model
     model_path = os.path.join(OUTPUT_DIR, "comprehensive_model.pth")
-    torch.save(model.state_dict(), model_path)
-    logging.info(f"Model saved to {model_path}")
+    
+    if args.visualize:
+        # Load existing model
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model not found: {model_path}. Run without --visualize to train first.")
+        
+        print(f"Loading existing model from {model_path}...")
+        logging.info(f"Loading model from {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.eval()
+        
+        # Create dummy history for consistency
+        history = {'train_losses': [], 'val_losses': []}
+        logging.info("Model loaded successfully (visualization mode)")
+    else:
+        # Train model
+        print("Starting model training...")
+        logging.info("Starting model training...")
+        model, history = train_model(model, train_loader, val_loader, EPOCHS, LR, device, PATIENCE)
+        
+        # Save model
+        torch.save(model.state_dict(), model_path)
+        logging.info(f"Model saved to {model_path}")
     
     # Evaluate model
     print("Evaluating model performance...")
@@ -2405,6 +2442,7 @@ def main():
         targets,
         feature_cols,
         config_analysis,
+        train_seq_counts=train_seq_counts,
         train_history_hours=TRAIN_HISTORY_WINDOW_HOURS,
         forecast_hours=FORECAST_WINDOW_HOURS)
     results = {
